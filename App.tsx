@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Mic, Info, Sparkles, Home, List, User } from 'lucide-react';
-import { GeminiLiveService } from './services/geminiLiveService';
+import { ProcessAudioService } from './services/processAudioService';
 import Visualizer from './components/Visualizer';
 import FoodTable from './components/FoodTable';
 import Dashboard from './components/Dashboard';
@@ -27,9 +27,9 @@ const App: React.FC = () => {
     return [];
   });
 
-  const [liveService, setLiveService] = useState<GeminiLiveService | null>(null);
+  const [liveService, setLiveService] = useState<ProcessAudioService | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const serviceRef = useRef<GeminiLiveService | null>(null);
+  const serviceRef = useRef<ProcessAudioService | null>(null);
   const isPointerDownRef = useRef(false);
 
   // Persist items to localStorage whenever they change
@@ -68,15 +68,8 @@ const App: React.FC = () => {
     isPointerDownRef.current = true;
     setError(null);
     setTranscript(""); // Clear previous transcript
-    
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-      setError("API Key not found.");
-      return;
-    }
 
-    // Initialize Service if needed
-    const service = new GeminiLiveService({
+    const service = new ProcessAudioService({
       onFoodLogged: handleFoodLogged,
       onAudioData: (amp) => setAmplitude(amp),
       onTranscription: (text) => setTranscript(prev => prev + text),
@@ -115,7 +108,7 @@ const App: React.FC = () => {
   const handlePointerUp = useCallback(() => {
     isPointerDownRef.current = false;
     if (serviceRef.current && isRecording) {
-      // Don't kill it immediately, call stopInput to wait for response
+      setTranscript('Processing...');
       serviceRef.current.stopInput();
     }
   }, [isRecording]);

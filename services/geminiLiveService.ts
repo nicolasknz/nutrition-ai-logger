@@ -1,3 +1,8 @@
+/**
+ * Superseded by ProcessAudioService + /api/process-audio (same behavior, key on server).
+ * This file kept for reference; recording + tool/instruction logic now live in
+ * processAudioService.ts and api/process-audio.ts.
+ */
 import { GoogleGenAI, LiveServerMessage, Modality, FunctionDeclaration, Type } from "@google/genai";
 import { base64ToUint8Array, float32ToPCM16, arrayBufferToBase64 } from "./audioUtils";
 import { FoodItem } from "../types";
