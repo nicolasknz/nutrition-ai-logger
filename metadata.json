@@ -1,0 +1,7 @@
+{
+  "name": "Copy of NutriVoice",
+  "description": "A voice-activated nutrition tracker powered by Gemini Live API. Speak your meal, and let the AI log the macros, micros, and calories in real-time.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
