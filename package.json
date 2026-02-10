@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "dev:full": "vercel dev",
@@ -21,6 +24,7 @@
     "@vercel/node": "^5.5.33",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
+    "vercel": "^50.14.1",
     "vite": "^6.2.0"
   }
 }

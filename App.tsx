@@ -6,10 +6,14 @@ import FoodTable from './components/FoodTable';
 import Dashboard from './components/Dashboard';
 import { FoodItem, DailyStats } from './types';
 
+const isTestingMode = import.meta.env.VITE_TESTING_MODE === 'true';
+
 const App: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [amplitude, setAmplitude] = useState(0);
   const [transcript, setTranscript] = useState("");
+  /** In testing mode: log of what the user said (no LLM); last entry is most recent. */
+  const [testingLog, setTestingLog] = useState<string[]>([]);
   
   // Initialize items from localStorage
   const [items, setItems] = useState<FoodItem[]>(() => {
@@ -31,6 +35,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const serviceRef = useRef<ProcessAudioService | null>(null);
   const isPointerDownRef = useRef(false);
+  const lastTranscriptRef = useRef('');
 
   // Persist items to localStorage whenever they change
   useEffect(() => {
@@ -70,15 +75,23 @@ const App: React.FC = () => {
     setTranscript(""); // Clear previous transcript
 
     const service = new ProcessAudioService({
+      testingMode: isTestingMode,
       onFoodLogged: handleFoodLogged,
       onAudioData: (amp) => setAmplitude(amp),
-      onTranscription: (text) => setTranscript(prev => prev + text),
+      onTranscription: (text) => {
+        lastTranscriptRef.current = text;
+        setTranscript(text);
+      },
+      onTestingComplete: (transcript) => {
+        setTestingLog(prev => [...prev, transcript].slice(-20));
+      },
       onError: (err) => {
         console.error(err);
         setError(err.message);
         setIsRecording(false);
       },
       onClose: () => {
+        lastTranscriptRef.current = '';
         setIsRecording(false);
         setAmplitude(0);
         serviceRef.current = null;
@@ -144,6 +157,27 @@ const App: React.FC = () => {
           <div className="mb-6 bg-red-50 text-red-600 px-4 py-3 rounded-xl text-sm flex items-center gap-2 border border-red-100 animate-in fade-in slide-in-from-top-2">
             <Info size={16} />
             {error}
+          </div>
+        )}
+
+        {/* Testing mode: log what was said (no LLM) */}
+        {isTestingMode && (
+          <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/80 p-4">
+            <div className="flex items-center gap-2 text-amber-800 font-semibold text-sm mb-2">
+              <span className="rounded bg-amber-200 px-2 py-0.5">Testing</span>
+              Log (what you said — not sent to LLM)
+            </div>
+            <div className="min-h-[4rem] max-h-48 overflow-y-auto rounded-lg bg-white/80 border border-amber-100 p-3 text-sm text-stone-700 font-mono">
+              {testingLog.length === 0 ? (
+                <span className="text-stone-400">Hold the mic and speak; entries appear here.</span>
+              ) : (
+                <ul className="space-y-2 list-decimal list-inside">
+                  {testingLog.filter(Boolean).map((entry, i) => (
+                    <li key={i}>{entry}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
 

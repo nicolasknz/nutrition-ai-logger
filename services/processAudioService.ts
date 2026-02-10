@@ -1,15 +1,58 @@
 import { float32ToPCM16, arrayBufferToBase64 } from './audioUtils';
 import type { FoodItem } from '../types';
 
+/** Browser SpeechRecognition (Chrome: webkitSpeechRecognition) for testing mode (no LLM). */
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognitionInstance;
+    webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
+  }
+}
+interface SpeechRecognitionInstance extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((e: SpeechRecognitionEvent) => void) | null;
+  onerror: ((e: Event) => void) | null;
+  onend: (() => void) | null;
+}
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+interface SpeechRecognitionResultList {
+  length: number;
+  item(i: number): SpeechRecognitionResult;
+  [i: number]: SpeechRecognitionResult;
+}
+interface SpeechRecognitionResult {
+  length: number;
+  item(i: number): SpeechRecognitionAlternative;
+  [i: number]: SpeechRecognitionAlternative;
+  isFinal: boolean;
+}
+interface SpeechRecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
 /**
  * Recording logic was in services/geminiLiveService.ts (handleOpen + onaudioprocess: getUserMedia,
  * ScriptProcessor 4096, PCM 16kHz, amplitude for visualizer). Here we buffer chunks and POST once
  * to /api/process-audio instead of streaming to Gemini Live; same callbacks (onFoodLogged, etc.).
+ * When testingMode is true, we use the Web Speech API only and do not call the LLM.
  */
 export interface ProcessAudioServiceConfig {
+  /** When true, transcribe with browser Web Speech API only; do not send to /api/process-audio (no LLM). */
+  testingMode?: boolean;
   onFoodLogged: (food: Omit<FoodItem, 'id' | 'timestamp'>) => void;
   onAudioData: (amplitude: number) => void;
   onTranscription: (text: string) => void;
+  /** In testing mode only: called with final transcript before onClose. */
+  onTestingComplete?: (transcript: string) => void;
   onError: (error: Error) => void;
   onClose: () => void;
 }
@@ -23,6 +66,10 @@ export class ProcessAudioService {
   private source: MediaStreamAudioSourceNode | null = null;
   private active = false;
   private pcmChunks: Int16Array[] = [];
+  /** Used in testing mode: Web Speech API recognition (no LLM). */
+  private recognition: SpeechRecognitionInstance | null = null;
+  private testingTranscript = '';
+  private _testingFallback = 0;
 
   constructor(config: ProcessAudioServiceConfig) {
     this.config = config;
@@ -32,6 +79,7 @@ export class ProcessAudioService {
     try {
       this.active = true;
       this.pcmChunks = [];
+      this.testingTranscript = '';
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, sampleRate: 16000 },
       });
@@ -62,6 +110,49 @@ export class ProcessAudioService {
 
       source.connect(processor);
       processor.connect(ctx.destination);
+
+      if (this.config.testingMode) {
+        const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (SpeechRecognitionCtor) {
+          this.recognition = new SpeechRecognitionCtor();
+          this.recognition.continuous = true;
+          this.recognition.interimResults = true;
+          this.recognition.lang = navigator.language || 'en-US';
+          this.recognition.onresult = (e: SpeechRecognitionEvent) => {
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+              const r = e.results[i];
+              const text = r[0]?.transcript ?? '';
+              if (r.isFinal && text) {
+                this.testingTranscript = (this.testingTranscript + ' ' + text).replace(/\s+/g, ' ').trim();
+              }
+            }
+            // Show live transcript (final + any interim) for overlay
+            let live = this.testingTranscript;
+            for (let i = e.resultIndex; i < e.results.length; i++) {
+              const t = e.results[i]?.[0]?.transcript ?? '';
+              if (t) live = (live + ' ' + t).replace(/\s+/g, ' ').trim();
+            }
+            if (live) this.config.onTranscription(live);
+          };
+          this.recognition.onerror = () => {};
+          const finishTesting = () => {
+            const rec = this.recognition;
+            this.recognition = null;
+            if (!rec) return;
+            clearTimeout(this._testingFallback);
+            const final = this.testingTranscript.trim();
+            if (final) {
+              this.config.onTranscription(final);
+              this.config.onTestingComplete?.(final);
+            }
+            this.config.onClose();
+          };
+          this.recognition.onend = finishTesting;
+          this.recognition.start();
+        } else {
+          this.config.onError(new Error('Testing mode requires SpeechRecognition (e.g. Chrome)'));
+        }
+      }
     } catch (err) {
       this.config.onError(err instanceof Error ? err : new Error('Failed to start microphone'));
       this.active = false;
@@ -70,6 +161,22 @@ export class ProcessAudioService {
 
   stopInput(): void {
     if (!this.active) return;
+
+    if (this.config.testingMode && this.recognition) {
+      // stop() is async; final transcript arrives in onresult before onend
+      this.recognition.stop();
+      // Fallback: if onend never fires, finish after 2.5s
+      this._testingFallback = setTimeout(() => {
+        this._testingFallback = 0;
+        const final = this.testingTranscript.trim();
+        if (final) {
+          this.config.onTranscription(final);
+          this.config.onTestingComplete?.(final);
+        }
+        this.config.onClose();
+        this.recognition = null;
+      }, 2500);
+    }
 
     // Stop capturing
     if (this.stream) {
@@ -103,7 +210,9 @@ export class ProcessAudioService {
       this.audioContext = null;
     }
 
-    this.sendToApi(audioBase64);
+    if (!this.config.testingMode) {
+      this.sendToApi(audioBase64);
+    }
   }
 
   private async sendToApi(audioBase64: string): Promise<void> {
@@ -154,6 +263,14 @@ export class ProcessAudioService {
 
   stop(): void {
     this.active = false;
+    if (this._testingFallback) {
+      clearTimeout(this._testingFallback);
+      this._testingFallback = 0;
+    }
+    if (this.recognition) {
+      this.recognition.abort();
+      this.recognition = null; // onend may still fire; handler checks rec and skips if nulled
+    }
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null;
