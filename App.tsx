@@ -10,6 +10,8 @@ const isTestingMode = import.meta.env.VITE_TESTING_MODE === 'true';
 
 const App: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [amplitude, setAmplitude] = useState(0);
   const [transcript, setTranscript] = useState("");
   /** In testing mode: log of what the user said (no LLM); last entry is most recent. */
@@ -34,7 +36,7 @@ const App: React.FC = () => {
   const [liveService, setLiveService] = useState<ProcessAudioService | null>(null);
   const [error, setError] = useState<string | null>(null);
   const serviceRef = useRef<ProcessAudioService | null>(null);
-  const isPointerDownRef = useRef(false);
+  const isTransitioningRef = useRef(false);
   const lastTranscriptRef = useRef('');
 
   // Persist items to localStorage whenever they change
@@ -68,11 +70,12 @@ const App: React.FC = () => {
     setItems(prev => prev.filter(item => item.id !== id));
   }, []);
 
-  const handlePointerDown = useCallback(async (e: React.PointerEvent) => {
-    e.preventDefault(); // Prevent text selection etc
-    isPointerDownRef.current = true;
+  const startRecording = useCallback(async () => {
+    if (isTransitioningRef.current || isRecording || isStarting || isProcessing) return;
+    isTransitioningRef.current = true;
     setError(null);
-    setTranscript(""); // Clear previous transcript
+    setTranscript("");
+    setIsStarting(true);
 
     const service = new ProcessAudioService({
       testingMode: isTestingMode,
@@ -89,13 +92,19 @@ const App: React.FC = () => {
         console.error(err);
         setError(err.message);
         setIsRecording(false);
+        setIsStarting(false);
+        setIsProcessing(false);
+        isTransitioningRef.current = false;
       },
       onClose: () => {
         lastTranscriptRef.current = '';
         setIsRecording(false);
+        setIsStarting(false);
+        setIsProcessing(false);
         setAmplitude(0);
         serviceRef.current = null;
         setLiveService(null);
+        isTransitioningRef.current = false;
       }
     });
 
@@ -104,34 +113,44 @@ const App: React.FC = () => {
     
     try {
       await service.start();
-      
-      // Check if user released button while connecting
-      if (!isPointerDownRef.current) {
-         service.stop();
-         return;
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate(10);
       }
-      
       setIsRecording(true);
     } catch (e) {
       console.error(e);
       setError("Failed to start service");
+      setIsStarting(false);
+      setIsProcessing(false);
+      serviceRef.current = null;
+      setLiveService(null);
+      isTransitioningRef.current = false;
+      return;
+    } finally {
+      setIsStarting(false);
+      isTransitioningRef.current = false;
     }
-  }, [handleFoodLogged]);
+  }, [handleFoodLogged, isRecording, isStarting, isProcessing]);
 
-  const handlePointerUp = useCallback(() => {
-    isPointerDownRef.current = false;
-    if (serviceRef.current && isRecording) {
-      setTranscript('Processing...');
-      serviceRef.current.stopInput();
+  const stopRecording = useCallback(() => {
+    if (isTransitioningRef.current || !serviceRef.current || !isRecording) return;
+    isTransitioningRef.current = true;
+    setIsRecording(false);
+    setIsProcessing(true);
+    setTranscript('Processing...');
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(10);
     }
+    serviceRef.current.stopInput();
   }, [isRecording]);
 
-  // Handle pointer leave in case they drag off the button
-  const handlePointerLeave = useCallback(() => {
-    if (isPointerDownRef.current) {
-       handlePointerUp();
+  const handleVoiceButtonClick = useCallback(() => {
+    if (isRecording) {
+      stopRecording();
+      return;
     }
-  }, [handlePointerUp]);
+    startRecording();
+  }, [isRecording, startRecording, stopRecording]);
 
   return (
     <div className="min-h-screen bg-stone-50 text-stone-900 pb-32">
@@ -169,7 +188,7 @@ const App: React.FC = () => {
             </div>
             <div className="min-h-[4rem] max-h-48 overflow-y-auto rounded-lg bg-white/80 border border-amber-100 p-3 text-sm text-stone-700 font-mono">
               {testingLog.length === 0 ? (
-                <span className="text-stone-400">Hold the mic and speak; entries appear here.</span>
+                <span className="text-stone-400">Tap mic to start, tap again to stop. Entries appear here.</span>
               ) : (
                 <ul className="space-y-2 list-decimal list-inside">
                   {testingLog.filter(Boolean).map((entry, i) => (
@@ -188,23 +207,23 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Recording Overlay - Shows when holding the mic */}
-      {isRecording && (
+      {/* Voice status overlay */}
+      {(isRecording || isStarting || isProcessing) && (
         <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[2px] flex flex-col justify-end pb-32 items-center pointer-events-none">
            <div className="bg-white/90 backdrop-blur-md shadow-2xl rounded-3xl p-6 w-11/12 max-w-sm mb-4 border border-white/50 animate-in slide-in-from-bottom-10 fade-in zoom-in-95">
               <div className="flex flex-col items-center gap-4 text-center">
                  <div className="flex items-center gap-2 text-orange-600 font-semibold text-sm uppercase tracking-wider">
                     <span className="relative flex h-3 w-3">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+                      <span className={`absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75 ${isRecording ? 'animate-ping' : ''}`}></span>
                       <span className="relative inline-flex rounded-full h-3 w-3 bg-orange-500"></span>
                     </span>
-                    Listening
+                    {isStarting ? 'Starting' : isProcessing ? 'Processing' : 'Listening'}
                  </div>
                  
-                 <Visualizer amplitude={amplitude} active={true} />
+                 <Visualizer amplitude={amplitude} active={isRecording} />
                  
                  <p className="text-lg font-medium text-stone-800 min-h-[1.5em]">
-                   {transcript || "Speak now..."}
+                   {transcript || (isStarting ? "Preparing microphone..." : isProcessing ? "Finalizing..." : "Speak now...")}
                  </p>
               </div>
            </div>
@@ -224,15 +243,18 @@ const App: React.FC = () => {
              <div className="absolute inset-0 bg-orange-500 rounded-full animate-ping opacity-20"></div>
            )}
            <button
-             onPointerDown={handlePointerDown}
-             onPointerUp={handlePointerUp}
-             onPointerLeave={handlePointerLeave}
+             type="button"
+             onClick={handleVoiceButtonClick}
              onContextMenu={(e) => e.preventDefault()}
+             disabled={isStarting || isProcessing}
+             aria-label={isRecording ? "Stop voice recording" : "Start voice recording"}
              className={`
-               h-20 w-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl border-4 border-stone-50
+               h-20 w-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl border-4 border-stone-50 touch-manipulation
                ${isRecording 
                  ? 'bg-orange-500 text-white scale-110 shadow-orange-500/30' 
-                 : 'bg-stone-900 text-white hover:bg-stone-800 hover:scale-105 active:scale-95'}
+                 : isStarting || isProcessing
+                   ? 'bg-stone-500 text-white cursor-not-allowed'
+                   : 'bg-stone-900 text-white hover:bg-stone-800 hover:scale-105 active:scale-95'}
              `}
            >
              <Mic size={32} />
