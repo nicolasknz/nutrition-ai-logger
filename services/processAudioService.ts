@@ -98,41 +98,13 @@ export class ProcessAudioService {
       this.pcmChunks = [];
       this.testingTranscript = '';
       this.manualStopRequested = false;
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000 },
-      });
-
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 16000,
-      });
-      this.audioContext = ctx;
-      const source = ctx.createMediaStreamSource(this.stream);
-      this.source = source;
-
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      this.processor = processor;
-
-      processor.onaudioprocess = (e: AudioProcessingEvent) => {
-        if (!this.active) return;
-        const inputData = e.inputBuffer.getChannelData(0);
-        let sum = 0;
-        for (let i = 0; i < inputData.length; i++) {
-          sum += inputData[i] * inputData[i];
-        }
-        const rms = Math.sqrt(sum / inputData.length);
-        this.config.onAudioData(rms);
-
-        const pcm16 = float32ToPCM16(inputData);
-        this.pcmChunks.push(new Int16Array(pcm16));
-      };
-
-      source.connect(processor);
-      processor.connect(ctx.destination);
-
       if (this.config.testingMode) {
         const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
         this.logTesting('testing mode enabled');
         if (SpeechRecognitionCtor) {
+          // IMPORTANT: In testing mode, avoid opening getUserMedia simultaneously.
+          // On many mobile browsers, SpeechRecognition returns empty results if mic is already in use.
+          this.config.onAudioData(0);
           this.logTesting(`speech recognition available (${navigator.language || 'en-US'})`);
           this.recognition = new SpeechRecognitionCtor();
           this.recognition.continuous = true;
@@ -202,7 +174,39 @@ export class ProcessAudioService {
           this.logTesting('speech recognition unavailable on this browser');
           this.config.onError(new Error('Testing mode requires SpeechRecognition (e.g. Chrome)'));
         }
+        return;
       }
+
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, sampleRate: 16000 },
+      });
+
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: 16000,
+      });
+      this.audioContext = ctx;
+      const source = ctx.createMediaStreamSource(this.stream);
+      this.source = source;
+
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      this.processor = processor;
+
+      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        if (!this.active) return;
+        const inputData = e.inputBuffer.getChannelData(0);
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sum += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sum / inputData.length);
+        this.config.onAudioData(rms);
+
+        const pcm16 = float32ToPCM16(inputData);
+        this.pcmChunks.push(new Int16Array(pcm16));
+      };
+
+      source.connect(processor);
+      processor.connect(ctx.destination);
     } catch (err) {
       this.config.onError(err instanceof Error ? err : new Error('Failed to start microphone'));
       this.active = false;
