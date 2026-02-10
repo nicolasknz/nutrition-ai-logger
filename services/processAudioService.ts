@@ -81,6 +81,8 @@ export class ProcessAudioService {
   private recognition: SpeechRecognitionInstance | null = null;
   private testingTranscript = '';
   private _testingFallback: ReturnType<typeof setTimeout> | 0 = 0;
+  /** In testing mode, only close after user explicitly requests stop. */
+  private manualStopRequested = false;
 
   constructor(config: ProcessAudioServiceConfig) {
     this.config = config;
@@ -95,6 +97,7 @@ export class ProcessAudioService {
       this.active = true;
       this.pcmChunks = [];
       this.testingTranscript = '';
+      this.manualStopRequested = false;
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, sampleRate: 16000 },
       });
@@ -160,17 +163,37 @@ export class ProcessAudioService {
             this.logTesting(`speech error: ${err}`);
           };
           const finishTesting = () => {
-            const rec = this.recognition;
-            this.recognition = null;
-            if (!rec) return;
+            if (!this.recognition) return;
             clearTimeout(this._testingFallback);
+            this._testingFallback = 0;
             const final = this.testingTranscript.trim();
-            this.logTesting(`speech end (final length: ${final.length})`);
-            if (final) {
-              this.config.onTranscription(final);
-              this.config.onTestingComplete?.(final);
+            this.logTesting(`speech end (final length: ${final.length}) manualStop=${this.manualStopRequested}`);
+
+            // Only close when the user tapped stop.
+            if (this.manualStopRequested) {
+              if (final) {
+                this.config.onTranscription(final);
+                this.config.onTestingComplete?.(final);
+              }
+              this.recognition = null;
+              this.config.onClose();
+              return;
             }
-            this.config.onClose();
+
+            // Mobile browsers can auto-end recognition. Keep listening until manual stop.
+            if (this.active && this.recognition) {
+              this.logTesting('speech auto-ended; restarting');
+              setTimeout(() => {
+                if (!this.active || this.manualStopRequested || !this.recognition) return;
+                try {
+                  this.recognition.start();
+                  this.logTesting('speech restart start');
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : 'restart failed';
+                  this.logTesting(`speech restart error: ${msg}`);
+                }
+              }, 150);
+            }
           };
           this.recognition.onend = finishTesting;
           this.logTesting('speech start');
@@ -190,11 +213,13 @@ export class ProcessAudioService {
     if (!this.active) return;
 
     if (this.config.testingMode && this.recognition) {
+      this.manualStopRequested = true;
       this.logTesting('speech stop requested');
       // stop() is async; final transcript arrives in onresult before onend
       this.recognition.stop();
       // Fallback: if onend never fires, finish after 2.5s
       this._testingFallback = setTimeout(() => {
+        if (!this.recognition) return;
         this._testingFallback = 0;
         const final = this.testingTranscript.trim();
         this.logTesting(`speech fallback close (final length: ${final.length})`);
@@ -301,6 +326,7 @@ export class ProcessAudioService {
 
   stop(): void {
     this.active = false;
+    this.manualStopRequested = true;
     if (this._testingFallback) {
       clearTimeout(this._testingFallback);
       this._testingFallback = 0;
