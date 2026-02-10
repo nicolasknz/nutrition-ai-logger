@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Mic, Info, Sparkles, Home, List, User } from 'lucide-react';
-import { ProcessAudioService } from './services/processAudioService';
+import { ProcessAudioService, type ApiDebugInfo } from './services/processAudioService';
 import Visualizer from './components/Visualizer';
 import FoodTable from './components/FoodTable';
 import Dashboard from './components/Dashboard';
@@ -35,6 +35,8 @@ const App: React.FC = () => {
 
   const [liveService, setLiveService] = useState<ProcessAudioService | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Last API result for production debugging (visible on mobile). */
+  const [lastDebug, setLastDebug] = useState<ApiDebugInfo | null>(null);
   const serviceRef = useRef<ProcessAudioService | null>(null);
   const isTransitioningRef = useRef(false);
   const lastTranscriptRef = useRef('');
@@ -105,7 +107,8 @@ const App: React.FC = () => {
         serviceRef.current = null;
         setLiveService(null);
         isTransitioningRef.current = false;
-      }
+      },
+      onDebug: setLastDebug,
     });
 
     serviceRef.current = service;
@@ -176,6 +179,23 @@ const App: React.FC = () => {
           <div className="mb-6 bg-red-50 text-red-600 px-4 py-3 rounded-xl text-sm flex items-center gap-2 border border-red-100 animate-in fade-in slide-in-from-top-2">
             <Info size={16} />
             {error}
+          </div>
+        )}
+
+        {/* Debug: last API result (for production mobile testing). In testing mode no API is called. */}
+        {(lastDebug || isTestingMode) && (
+          <div className="mb-4 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-mono text-slate-700">
+            {isTestingMode ? (
+              <span><span className="font-semibold">Debug:</span> Testing mode — no API call (Web Speech only)</span>
+            ) : lastDebug ? (
+              <>
+                <span className="font-semibold">API:</span>{' '}
+                {lastDebug.status || '—'} {lastDebug.ok ? 'OK' : 'ERR'}
+                {' · foods: '}{lastDebug.foodsCount}
+                {lastDebug.payloadBytes != null && ` · payload: ${(lastDebug.payloadBytes / 1024).toFixed(1)} KB`}
+                {lastDebug.errorMsg && ` · ${lastDebug.errorMsg}`}
+              </>
+            ) : null}
           </div>
         )}
 

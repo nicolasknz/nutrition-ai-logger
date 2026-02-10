@@ -61,3 +61,15 @@ Client ← JSON { transcription, foods[] } ← Parse tool calls → Update UI (t
 |----------|--------|
 | `GEMINI_API_KEY` | Required. Used only in `api/process-audio`. |
 | `GEMINI_MODEL` | Optional. Default `gemini-2.5-flash`. Use e.g. `gemini-2.5-flash-lite` for different quota. |
+
+---
+
+## Testing mode (client)
+
+Set **`VITE_TESTING_MODE=true`** in `.env` or `.env.local` (and restart the dev server).
+
+When enabled:
+
+- **No LLM** — audio is never sent to `/api/process-audio` or Gemini.
+- **Browser speech-to-text only** — the app uses the Web Speech API (e.g. Chrome) to transcribe what you say.
+- **Log box** — a “Testing” panel shows exactly what was said; each mic tap adds one log entry. Useful to verify phrasing or to develop without using the API.

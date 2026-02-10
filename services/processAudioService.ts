@@ -45,6 +45,13 @@ interface SpeechRecognitionAlternative {
  * to /api/process-audio instead of streaming to Gemini Live; same callbacks (onFoodLogged, etc.).
  * When testingMode is true, we use the Web Speech API only and do not call the LLM.
  */
+export interface ApiDebugInfo {
+  status: number;
+  ok: boolean;
+  foodsCount: number;
+  errorMsg?: string;
+  payloadBytes?: number;
+}
 export interface ProcessAudioServiceConfig {
   /** When true, transcribe with browser Web Speech API only; do not send to /api/process-audio (no LLM). */
   testingMode?: boolean;
@@ -55,6 +62,8 @@ export interface ProcessAudioServiceConfig {
   onTestingComplete?: (transcript: string) => void;
   onError: (error: Error) => void;
   onClose: () => void;
+  /** Optional: called after each API request (status, foods count, error); for production debugging. */
+  onDebug?: (info: ApiDebugInfo) => void;
 }
 
 /** Records mic audio and sends it to the serverless API for processing. No API key on client. */
@@ -216,6 +225,10 @@ export class ProcessAudioService {
   }
 
   private async sendToApi(audioBase64: string): Promise<void> {
+    const payloadBytes = new TextEncoder().encode(JSON.stringify({ audioBase64 })).length;
+    const report = (info: ApiDebugInfo) => {
+      this.config.onDebug?.({ ...info, payloadBytes });
+    };
     try {
       const res = await fetch('/api/process-audio', {
         method: 'POST',
@@ -227,6 +240,7 @@ export class ProcessAudioService {
 
       if (!res.ok) {
         const msg = data?.error || data?.details || `Request failed (${res.status})`;
+        report({ status: res.status, ok: false, foodsCount: 0, errorMsg: msg });
         this.config.onError(new Error(msg));
         this.config.onClose();
         return;
@@ -236,6 +250,8 @@ export class ProcessAudioService {
         this.config.onTranscription(data.transcription);
       }
       const foods = data.foods ?? (data.food ? [data.food] : []);
+      const count = Array.isArray(foods) ? foods.length : 0;
+      report({ status: res.status, ok: true, foodsCount: count });
       if (Array.isArray(foods)) {
         for (const f of foods) {
           if (f && typeof f === 'object') {
@@ -256,6 +272,8 @@ export class ProcessAudioService {
 
       this.config.onClose();
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      report({ status: 0, ok: false, foodsCount: 0, errorMsg: msg });
       this.config.onError(err instanceof Error ? err : new Error('Network error'));
       this.config.onClose();
     }
