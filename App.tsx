@@ -16,6 +16,8 @@ const App: React.FC = () => {
   const [transcript, setTranscript] = useState("");
   /** In testing mode: log of what the user said (no LLM); last entry is most recent. */
   const [testingLog, setTestingLog] = useState<string[]>([]);
+  /** In testing mode: low-level speech lifecycle events (start/result/error/end). */
+  const [testingEvents, setTestingEvents] = useState<string[]>([]);
   
   // Initialize items from localStorage
   const [items, setItems] = useState<FoodItem[]>(() => {
@@ -89,6 +91,10 @@ const App: React.FC = () => {
       },
       onTestingComplete: (transcript) => {
         setTestingLog(prev => [...prev, transcript].slice(-20));
+      },
+      onTestingEvent: (event) => {
+        const ts = new Date().toLocaleTimeString();
+        setTestingEvents(prev => [...prev, `${ts} · ${event}`].slice(-60));
       },
       onError: (err) => {
         console.error(err);
@@ -212,6 +218,18 @@ const App: React.FC = () => {
               ) : (
                 <ul className="space-y-2 list-decimal list-inside">
                   {testingLog.filter(Boolean).map((entry, i) => (
+                    <li key={i}>{entry}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="mt-3 text-amber-800 font-semibold text-sm">Events</div>
+            <div className="mt-2 min-h-[4rem] max-h-52 overflow-y-auto rounded-lg bg-white/80 border border-amber-100 p-3 text-xs text-stone-700 font-mono">
+              {testingEvents.length === 0 ? (
+                <span className="text-stone-400">No events yet. Start and stop recording to see speech lifecycle events.</span>
+              ) : (
+                <ul className="space-y-1">
+                  {testingEvents.map((entry, i) => (
                     <li key={i}>{entry}</li>
                   ))}
                 </ul>

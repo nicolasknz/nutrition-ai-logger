@@ -60,6 +60,8 @@ export interface ProcessAudioServiceConfig {
   onTranscription: (text: string) => void;
   /** In testing mode only: called with final transcript before onClose. */
   onTestingComplete?: (transcript: string) => void;
+  /** In testing mode: low-level speech lifecycle events for UI debugging. */
+  onTestingEvent?: (event: string) => void;
   onError: (error: Error) => void;
   onClose: () => void;
   /** Optional: called after each API request (status, foods count, error); for production debugging. */
@@ -78,10 +80,14 @@ export class ProcessAudioService {
   /** Used in testing mode: Web Speech API recognition (no LLM). */
   private recognition: SpeechRecognitionInstance | null = null;
   private testingTranscript = '';
-  private _testingFallback = 0;
+  private _testingFallback: ReturnType<typeof setTimeout> | 0 = 0;
 
   constructor(config: ProcessAudioServiceConfig) {
     this.config = config;
+  }
+
+  private logTesting(event: string): void {
+    this.config.onTestingEvent?.(event);
   }
 
   async start(): Promise<void> {
@@ -122,7 +128,9 @@ export class ProcessAudioService {
 
       if (this.config.testingMode) {
         const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        this.logTesting('testing mode enabled');
         if (SpeechRecognitionCtor) {
+          this.logTesting(`speech recognition available (${navigator.language || 'en-US'})`);
           this.recognition = new SpeechRecognitionCtor();
           this.recognition.continuous = true;
           this.recognition.interimResults = true;
@@ -131,8 +139,12 @@ export class ProcessAudioService {
             for (let i = e.resultIndex; i < e.results.length; i++) {
               const r = e.results[i];
               const text = r[0]?.transcript ?? '';
-              if (r.isFinal && text) {
+              if (!text) continue;
+              if (r.isFinal) {
+                this.logTesting(`final: ${text}`);
                 this.testingTranscript = (this.testingTranscript + ' ' + text).replace(/\s+/g, ' ').trim();
+              } else {
+                this.logTesting(`interim: ${text}`);
               }
             }
             // Show live transcript (final + any interim) for overlay
@@ -143,13 +155,17 @@ export class ProcessAudioService {
             }
             if (live) this.config.onTranscription(live);
           };
-          this.recognition.onerror = () => {};
+          this.recognition.onerror = (e: Event) => {
+            const err = (e as unknown as { error?: string }).error || 'unknown';
+            this.logTesting(`speech error: ${err}`);
+          };
           const finishTesting = () => {
             const rec = this.recognition;
             this.recognition = null;
             if (!rec) return;
             clearTimeout(this._testingFallback);
             const final = this.testingTranscript.trim();
+            this.logTesting(`speech end (final length: ${final.length})`);
             if (final) {
               this.config.onTranscription(final);
               this.config.onTestingComplete?.(final);
@@ -157,8 +173,10 @@ export class ProcessAudioService {
             this.config.onClose();
           };
           this.recognition.onend = finishTesting;
+          this.logTesting('speech start');
           this.recognition.start();
         } else {
+          this.logTesting('speech recognition unavailable on this browser');
           this.config.onError(new Error('Testing mode requires SpeechRecognition (e.g. Chrome)'));
         }
       }
@@ -172,12 +190,14 @@ export class ProcessAudioService {
     if (!this.active) return;
 
     if (this.config.testingMode && this.recognition) {
+      this.logTesting('speech stop requested');
       // stop() is async; final transcript arrives in onresult before onend
       this.recognition.stop();
       // Fallback: if onend never fires, finish after 2.5s
       this._testingFallback = setTimeout(() => {
         this._testingFallback = 0;
         const final = this.testingTranscript.trim();
+        this.logTesting(`speech fallback close (final length: ${final.length})`);
         if (final) {
           this.config.onTranscription(final);
           this.config.onTestingComplete?.(final);
