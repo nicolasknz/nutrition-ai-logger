@@ -45,7 +45,10 @@ const UI_TEXT = {
     today: 'Today',
     history: 'History',
     goals: 'Goals',
-    historyComingSoon: 'History view is coming soon.',
+    previousDay: 'Previous day',
+    nextDay: 'Next day',
+    jumpToToday: 'Today',
+    noMealsForDate: 'No meals logged for this date.',
     stopVoiceRecording: 'Stop voice recording',
     startVoiceRecording: 'Start voice recording',
   },
@@ -72,7 +75,10 @@ const UI_TEXT = {
     today: 'Hoje',
     history: 'Historico',
     goals: 'Metas',
-    historyComingSoon: 'A visualizacao do historico chegara em breve.',
+    previousDay: 'Dia anterior',
+    nextDay: 'Proximo dia',
+    jumpToToday: 'Hoje',
+    noMealsForDate: 'Nenhuma refeicao registrada nesta data.',
     stopVoiceRecording: 'Parar gravacao de voz',
     startVoiceRecording: 'Iniciar gravacao de voz',
   },
@@ -90,6 +96,17 @@ const formatMealLabel = (date: Date, language: SupportedLanguageCode = 'en-US'):
   const time = date.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' });
   return language === 'pt-BR' ? `Refeicao ${time}` : `Meal ${time}`;
 };
+
+const startOfLocalDay = (date: Date): Date => {
+  const normalized = new Date(date);
+  normalized.setHours(0, 0, 0, 0);
+  return normalized;
+};
+
+const isSameCalendarDay = (a: Date, b: Date): boolean =>
+  a.getFullYear() === b.getFullYear()
+  && a.getMonth() === b.getMonth()
+  && a.getDate() === b.getDate();
 
 const parseQuantityAmount = (quantity: string): number | null => {
   const normalized = quantity.trim().toLowerCase();
@@ -267,6 +284,7 @@ const App: React.FC = () => {
   const [meals, setMeals] = useState<MealGroup[]>([]);
   const [goals, setGoals] = useState<NutritionGoals>({});
   const [activeTab, setActiveTab] = useState<'today' | 'history' | 'goals'>('today');
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState<Date>(() => startOfLocalDay(new Date()));
 
   const [liveService, setLiveService] = useState<ProcessAudioService | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -375,16 +393,68 @@ const App: React.FC = () => {
     });
   }, [items, sessionUserId]);
 
-  // Calculate stats
+  const todayItems = useMemo(() => {
+    const today = new Date();
+    return items.filter((item) => isSameCalendarDay(item.timestamp, today));
+  }, [items]);
+
+  const todayMealIds = useMemo(() => new Set(todayItems.map((item) => item.mealId)), [todayItems]);
+
+  const todayMeals = useMemo(() => meals.filter((meal) => todayMealIds.has(meal.id)), [meals, todayMealIds]);
+
+  const historyItems = useMemo(
+    () => items.filter((item) => isSameCalendarDay(item.timestamp, selectedHistoryDate)),
+    [items, selectedHistoryDate]
+  );
+
+  const historyMealIds = useMemo(() => new Set(historyItems.map((item) => item.mealId)), [historyItems]);
+
+  const historyMeals = useMemo(
+    () => meals.filter((meal) => historyMealIds.has(meal.id)),
+    [meals, historyMealIds]
+  );
+
+  const isHistoryDateToday = useMemo(
+    () => isSameCalendarDay(selectedHistoryDate, new Date()),
+    [selectedHistoryDate]
+  );
+
+  const historyDateLabel = useMemo(
+    () => selectedHistoryDate.toLocaleDateString(selectedLanguage, { weekday: 'long', month: 'short', day: 'numeric' }),
+    [selectedHistoryDate, selectedLanguage]
+  );
+
+  const goToPreviousHistoryDay = useCallback(() => {
+    setSelectedHistoryDate((prev) => {
+      const next = new Date(prev);
+      next.setDate(next.getDate() - 1);
+      return startOfLocalDay(next);
+    });
+  }, []);
+
+  const goToNextHistoryDay = useCallback(() => {
+    setSelectedHistoryDate((prev) => {
+      const today = startOfLocalDay(new Date());
+      const next = new Date(prev);
+      next.setDate(next.getDate() + 1);
+      return next > today ? today : startOfLocalDay(next);
+    });
+  }, []);
+
+  const jumpHistoryToToday = useCallback(() => {
+    setSelectedHistoryDate(startOfLocalDay(new Date()));
+  }, []);
+
+  // Calculate today's stats
   const stats: DailyStats = useMemo(() => {
-    return items.reduce((acc, item) => ({
+    return todayItems.reduce((acc, item) => ({
       totalCalories: acc.totalCalories + item.calories,
       totalProtein: acc.totalProtein + item.protein,
       totalCarbs: acc.totalCarbs + item.carbs,
       totalFat: acc.totalFat + item.fat,
       totalFiber: acc.totalFiber + (item.fiber || 0),
     }), { totalCalories: 0, totalProtein: 0, totalCarbs: 0, totalFat: 0, totalFiber: 0 });
-  }, [items]);
+  }, [todayItems]);
 
   const createMealGroup = useCallback((createdAt = new Date()): MealGroup => {
     const meal: MealGroup = {
@@ -859,8 +929,8 @@ const App: React.FC = () => {
             <>
               <Dashboard stats={stats} goals={goals} language={selectedLanguage} />
               <FoodTable
-                items={items}
-                meals={meals}
+                items={todayItems}
+                meals={todayMeals}
                 onMoveItem={moveItemToMeal}
                 onRemove={removeItem}
                 onEditQuantity={editItemQuantity}
@@ -870,8 +940,54 @@ const App: React.FC = () => {
           )}
 
           {activeTab === 'history' && (
-            <div className="rounded-2xl border border-stone-200 bg-white px-6 py-8 text-sm text-stone-500">
-              {t.historyComingSoon}
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-stone-200 bg-white px-4 py-4 sm:px-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-stone-800">{historyDateLabel}</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={goToPreviousHistoryDay}
+                      className="rounded-lg border border-stone-200 px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-50"
+                    >
+                      {t.previousDay}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={jumpHistoryToToday}
+                      disabled={isHistoryDateToday}
+                      className="rounded-lg border border-stone-200 px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t.jumpToToday}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={goToNextHistoryDay}
+                      disabled={isHistoryDateToday}
+                      className="rounded-lg border border-stone-200 px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {t.nextDay}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {historyItems.length === 0 && (
+                <div className="rounded-2xl border border-stone-200 bg-white px-6 py-4 text-sm text-stone-500">
+                  {t.noMealsForDate}
+                </div>
+              )}
+
+              {historyItems.length > 0 && (
+                <FoodTable
+                  items={historyItems}
+                  meals={historyMeals}
+                  onMoveItem={moveItemToMeal}
+                  onRemove={removeItem}
+                  onEditQuantity={editItemQuantity}
+                  language={selectedLanguage}
+                />
+              )}
             </div>
           )}
 
@@ -909,7 +1025,7 @@ const App: React.FC = () => {
       )}
 
       {/* Bottom Navigation Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 h-20 px-4 z-50 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] pb-safe">
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 h-20 px-4 z-50 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] pb-safe md:left-1/2 md:right-auto md:w-[560px] md:-translate-x-1/2 md:rounded-t-2xl md:border md:border-stone-200">
         <div className="relative h-full">
           <div className="grid h-full grid-cols-3 items-center">
             <div className="flex items-center justify-start gap-2">
