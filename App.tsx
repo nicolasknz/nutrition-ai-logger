@@ -1,15 +1,21 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Mic, Info, Sparkles, Home, List, User } from 'lucide-react';
+import { Mic, Info, Home, List, Target } from 'lucide-react';
 import { ProcessAudioService, type ApiDebugInfo } from './services/processAudioService';
 import Visualizer from './components/Visualizer';
 import FoodTable from './components/FoodTable';
 import Dashboard from './components/Dashboard';
-import { FoodItem, DailyStats, MealGroup } from './types';
+import Goals from './components/Goals.tsx';
+import AuthScreen from './components/AuthScreen';
+import { FoodItem, DailyStats, MealGroup, NutritionGoals } from './types';
+import { supabase } from './lib/supabase';
+import { nutritionRepository, type NutritionSnapshot } from './data/nutritionRepository';
 
 const isTestingMode = import.meta.env.VITE_TESTING_MODE === 'true';
 const ITEMS_STORAGE_KEY = 'nutrivoice-items';
 const MEALS_STORAGE_KEY = 'nutrivoice-meals';
 const LANGUAGE_STORAGE_KEY = 'nutrivoice-language';
+const GOALS_STORAGE_KEY = 'nutrivoice-goals';
+const SUPABASE_IMPORT_DONE_KEY = 'nutrivoice-supabase-import-done';
 const LANGUAGE_OPTIONS = [
   { code: 'en-US', label: 'English' },
   { code: 'pt-BR', label: 'Portuguese (BR)' },
@@ -38,6 +44,8 @@ const UI_TEXT = {
     speakNow: 'Speak now...',
     today: 'Today',
     history: 'History',
+    goals: 'Goals',
+    historyComingSoon: 'History view is coming soon.',
     stopVoiceRecording: 'Stop voice recording',
     startVoiceRecording: 'Start voice recording',
   },
@@ -63,6 +71,8 @@ const UI_TEXT = {
     speakNow: 'Fale agora...',
     today: 'Hoje',
     history: 'Historico',
+    goals: 'Metas',
+    historyComingSoon: 'A visualizacao do historico chegara em breve.',
     stopVoiceRecording: 'Parar gravacao de voz',
     startVoiceRecording: 'Iniciar gravacao de voz',
   },
@@ -73,6 +83,8 @@ type StoredFoodItem = Omit<FoodItem, 'timestamp'> & {
   mealId?: string;
 };
 type StoredMealGroup = Omit<MealGroup, 'createdAt'> & { createdAt: string | Date };
+type AuthMode = 'signIn' | 'signUp';
+type AuthAction = AuthMode | 'google' | null;
 
 const formatMealLabel = (date: Date, language: SupportedLanguageCode = 'en-US'): string => {
   const time = date.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' });
@@ -132,7 +144,7 @@ const scaleFoodNutrition = (item: FoodItem, factor: number): FoodItem => {
   };
 };
 
-const loadPersistedData = (): { items: FoodItem[]; meals: MealGroup[] } => {
+const loadLocalPersistedData = (): { items: FoodItem[]; meals: MealGroup[] } => {
   try {
     const rawItems = localStorage.getItem(ITEMS_STORAGE_KEY);
     const parsedItems: StoredFoodItem[] = rawItems ? JSON.parse(rawItems) : [];
@@ -186,12 +198,56 @@ const loadPersistedData = (): { items: FoodItem[]; meals: MealGroup[] } => {
     meals.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     return { items, meals };
   } catch (e) {
-    console.error('Failed to load items from local storage', e);
+    console.error('Failed to load local items', e);
     return { items: [], meals: [] };
   }
 };
 
+const loadLocalPersistedGoals = (): NutritionGoals => {
+  try {
+    const rawGoals = localStorage.getItem(GOALS_STORAGE_KEY);
+    if (!rawGoals) return {};
+    const parsed = JSON.parse(rawGoals) as Partial<Record<keyof NutritionGoals, unknown>>;
+    const toOptionalNumber = (value: unknown): number | undefined => {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+      return value;
+    };
+
+    return {
+      calories: toOptionalNumber(parsed.calories),
+      protein: toOptionalNumber(parsed.protein),
+      carbs: toOptionalNumber(parsed.carbs),
+      fat: toOptionalNumber(parsed.fat),
+      fiber: toOptionalNumber(parsed.fiber),
+    };
+  } catch (e) {
+    console.error('Failed to load local goals', e);
+    return {};
+  }
+};
+
+const getOAuthRedirectUrl = (): string => {
+  const explicitRedirect = import.meta.env.VITE_AUTH_REDIRECT_URL?.trim();
+  if (explicitRedirect) return explicitRedirect;
+  return `${window.location.origin}/`;
+};
+
+const toFriendlyAuthMessage = (rawMessage: string): string => {
+  const normalized = rawMessage.toLowerCase();
+  if (normalized.includes('invalid login credentials')) return 'Email or password is incorrect.';
+  if (normalized.includes('email not confirmed')) return 'Please confirm your email address before signing in.';
+  if (normalized.includes('user already registered')) return 'This email is already registered. Try signing in instead.';
+  if (normalized.includes('password should be at least')) return 'Your password does not meet the minimum requirements.';
+  return rawMessage;
+};
+
 const App: React.FC = () => {
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authPendingAction, setAuthPendingAction] = useState<AuthAction>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [isDataLoading, setIsDataLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -206,10 +262,11 @@ const App: React.FC = () => {
     if (stored === 'pt-BR' || stored === 'en-US') return stored;
     return 'en-US';
   });
-  
-  const initialData = useMemo(loadPersistedData, []);
-  const [items, setItems] = useState<FoodItem[]>(initialData.items);
-  const [meals, setMeals] = useState<MealGroup[]>(initialData.meals);
+
+  const [items, setItems] = useState<FoodItem[]>([]);
+  const [meals, setMeals] = useState<MealGroup[]>([]);
+  const [goals, setGoals] = useState<NutritionGoals>({});
+  const [activeTab, setActiveTab] = useState<'today' | 'history' | 'goals'>('today');
 
   const [liveService, setLiveService] = useState<ProcessAudioService | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -222,27 +279,101 @@ const App: React.FC = () => {
   const recordingFoodsCountRef = useRef(0);
   const t = UI_TEXT[selectedLanguage];
 
-  // Persist items/meals to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(items));
-  }, [items]);
-  useEffect(() => {
-    localStorage.setItem(MEALS_STORAGE_KEY, JSON.stringify(meals));
-  }, [meals]);
   useEffect(() => {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, selectedLanguage);
   }, [selectedLanguage]);
 
   useEffect(() => {
+    let isMounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!isMounted) return;
+      setSessionUserId(data.session?.user.id ?? null);
+      setIsAuthLoading(false);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSessionUserId(nextSession?.user.id ?? null);
+      setIsAuthLoading(false);
+      if (nextSession?.user) {
+        setAuthError(null);
+        setAuthNotice(null);
+        setAuthPendingAction(null);
+      }
+    });
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionUserId) {
+      setItems([]);
+      setMeals([]);
+      setGoals({});
+      setIsDataLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+    const loadData = async () => {
+      setIsDataLoading(true);
+      try {
+        let snapshot = await nutritionRepository.loadInitialData(sessionUserId);
+        const hasRemoteData = snapshot.items.length > 0 || snapshot.meals.length > 0 || Object.keys(snapshot.goals).length > 0;
+        const hasImportedLocally = localStorage.getItem(SUPABASE_IMPORT_DONE_KEY) === 'true';
+        if (!hasRemoteData && !hasImportedLocally) {
+          const localData = loadLocalPersistedData();
+          const localGoals = loadLocalPersistedGoals();
+          const localSnapshot: NutritionSnapshot = { items: localData.items, meals: localData.meals, goals: localGoals };
+          const hasLocalData =
+            localSnapshot.items.length > 0 || localSnapshot.meals.length > 0 || Object.keys(localSnapshot.goals).length > 0;
+          if (hasLocalData) {
+            await nutritionRepository.importSnapshot(sessionUserId, localSnapshot);
+          }
+          localStorage.setItem(SUPABASE_IMPORT_DONE_KEY, 'true');
+          snapshot = await nutritionRepository.loadInitialData(sessionUserId);
+        }
+        if (!isMounted) return;
+        setItems(snapshot.items);
+        setMeals(snapshot.meals);
+        setGoals(snapshot.goals);
+      } catch (e) {
+        console.error(e);
+        if (!isMounted) return;
+        const message = e instanceof Error ? e.message : 'Failed to load data from Supabase';
+        setError(message);
+      } finally {
+        if (isMounted) setIsDataLoading(false);
+      }
+    };
+    loadData();
+    return () => {
+      isMounted = false;
+    };
+  }, [sessionUserId]);
+
+  useEffect(() => {
     setMeals((prevMeals) => {
       const usedMealIds = new Set(items.map((item) => item.mealId));
       const activeMealId = activeRecordingMealIdRef.current;
-      const nextMeals = prevMeals.filter(
-        (meal) => usedMealIds.has(meal.id) || meal.id === activeMealId
-      );
+      const removedMealIds = prevMeals
+        .filter((meal) => !usedMealIds.has(meal.id) && meal.id !== activeMealId)
+        .map((meal) => meal.id);
+      if (sessionUserId && removedMealIds.length > 0) {
+        for (const mealId of removedMealIds) {
+          void nutritionRepository.deleteMeal(sessionUserId, mealId).catch((e) => {
+            console.error(e);
+            const message = e instanceof Error ? e.message : 'Failed to clean up empty meal';
+            setError(message);
+          });
+        }
+      }
+      const nextMeals = prevMeals.filter((meal) => usedMealIds.has(meal.id) || meal.id === activeMealId);
       return nextMeals.length === prevMeals.length ? prevMeals : nextMeals;
     });
-  }, [items]);
+  }, [items, sessionUserId]);
 
   // Calculate stats
   const stats: DailyStats = useMemo(() => {
@@ -255,35 +386,70 @@ const App: React.FC = () => {
     }), { totalCalories: 0, totalProtein: 0, totalCarbs: 0, totalFat: 0, totalFiber: 0 });
   }, [items]);
 
-  const createMealGroup = useCallback((createdAt = new Date()): string => {
+  const createMealGroup = useCallback((createdAt = new Date()): MealGroup => {
     const meal: MealGroup = {
       id: crypto.randomUUID(),
       label: formatMealLabel(createdAt, selectedLanguage),
       createdAt,
     };
     setMeals((prev) => [meal, ...prev]);
-    return meal.id;
+    return meal;
   }, [selectedLanguage]);
 
   const handleFoodLogged = useCallback((foodData: Omit<FoodItem, 'id' | 'timestamp' | 'mealId'>) => {
-    const mealId = activeRecordingMealIdRef.current ?? createMealGroup();
+    let mealId = activeRecordingMealIdRef.current;
+    let newlyCreatedMeal: MealGroup | null = null;
+    if (!mealId) {
+      newlyCreatedMeal = createMealGroup();
+      mealId = newlyCreatedMeal.id;
+    }
+    const newItem: FoodItem = {
+      ...foodData,
+      id: crypto.randomUUID(),
+      mealId,
+      timestamp: new Date(),
+    };
     recordingFoodsCountRef.current += 1;
-    setItems(prev => [
-      {
-        ...foodData,
-        id: crypto.randomUUID(),
-        mealId,
-        timestamp: new Date()
-      },
-      ...prev
-    ]);
-  }, [createMealGroup]);
+    setItems((prev) => [newItem, ...prev]);
+    if (!sessionUserId) return;
+    void (async () => {
+      try {
+        if (newlyCreatedMeal) {
+          await nutritionRepository.insertMeal(sessionUserId, newlyCreatedMeal);
+        }
+        await nutritionRepository.insertFoodItem(sessionUserId, newItem);
+      } catch (e) {
+        console.error(e);
+        const message = e instanceof Error ? e.message : 'Failed to save logged food';
+        setError(message);
+        setItems((prev) => prev.filter((item) => item.id !== newItem.id));
+        if (newlyCreatedMeal) {
+          setMeals((prev) => prev.filter((meal) => meal.id !== newlyCreatedMeal.id));
+        }
+      }
+    })();
+  }, [createMealGroup, sessionUserId]);
 
   const removeItem = useCallback((id: string) => {
-    setItems(prev => prev.filter(item => item.id !== id));
-  }, []);
+    const previousItems = items;
+    const exists = previousItems.some((item) => item.id === id);
+    if (!exists) return;
+    setItems((prev) => prev.filter((item) => item.id !== id));
+    if (!sessionUserId) return;
+    void (async () => {
+      try {
+        await nutritionRepository.deleteFoodItem(sessionUserId, id);
+      } catch (e) {
+        console.error(e);
+        const message = e instanceof Error ? e.message : 'Failed to delete food item';
+        setError(message);
+        setItems(previousItems);
+      }
+    })();
+  }, [items, sessionUserId]);
 
   const moveItemToMeal = useCallback((itemId: string, targetMealId: string) => {
+    const previousItems = items;
     setItems((prev) =>
       prev.map((item) =>
         item.id === itemId
@@ -291,9 +457,22 @@ const App: React.FC = () => {
           : item
       )
     );
-  }, []);
+    if (!sessionUserId) return;
+    void (async () => {
+      try {
+        await nutritionRepository.updateFoodItem(sessionUserId, itemId, { mealId: targetMealId });
+      } catch (e) {
+        console.error(e);
+        const message = e instanceof Error ? e.message : 'Failed to move food item';
+        setError(message);
+        setItems(previousItems);
+      }
+    })();
+  }, [items, sessionUserId]);
 
   const editItemQuantity = useCallback((itemId: string, quantity: string) => {
+    const previousItems = items;
+    let persistedPatch: Parameters<typeof nutritionRepository.updateFoodItem>[2] | null = null;
     setItems((prev) =>
       prev.map((item) =>
         item.id === itemId
@@ -301,26 +480,66 @@ const App: React.FC = () => {
               const previousAmount = parseQuantityAmount(item.quantity);
               const nextAmount = parseQuantityAmount(quantity);
               if (!previousAmount || !nextAmount) {
+                persistedPatch = {
+                  quantity,
+                };
                 return { ...item, quantity };
               }
               const factor = nextAmount / previousAmount;
               const scaled = scaleFoodNutrition(item, factor);
+              persistedPatch = {
+                quantity,
+                calories: scaled.calories,
+                protein: scaled.protein,
+                carbs: scaled.carbs,
+                fat: scaled.fat,
+                fiber: scaled.fiber,
+                micronutrients: scaled.micronutrients,
+              };
               return { ...scaled, quantity };
             })()
           : item
       )
     );
-  }, []);
+    if (!sessionUserId || !persistedPatch) return;
+    void (async () => {
+      try {
+        await nutritionRepository.updateFoodItem(sessionUserId, itemId, persistedPatch ?? { quantity });
+      } catch (e) {
+        console.error(e);
+        const message = e instanceof Error ? e.message : 'Failed to update item quantity';
+        setError(message);
+        setItems(previousItems);
+      }
+    })();
+  }, [items, sessionUserId]);
 
   const startRecording = useCallback(async () => {
     if (isTransitioningRef.current || isRecording || isStarting || isProcessing) return;
+    if (!sessionUserId) {
+      setError('Please sign in before recording.');
+      return;
+    }
     isTransitioningRef.current = true;
     setError(null);
     setTranscript("");
     setIsStarting(true);
-    const recordingMealId = createMealGroup();
-    activeRecordingMealIdRef.current = recordingMealId;
+    const recordingMeal = createMealGroup();
+    activeRecordingMealIdRef.current = recordingMeal.id;
     recordingFoodsCountRef.current = 0;
+    try {
+      await nutritionRepository.insertMeal(sessionUserId, recordingMeal);
+    } catch (e) {
+      console.error(e);
+      const message = e instanceof Error ? e.message : 'Failed to create meal';
+      setError(message);
+      setMeals((prev) => prev.filter((meal) => meal.id !== recordingMeal.id));
+      activeRecordingMealIdRef.current = null;
+      recordingFoodsCountRef.current = 0;
+      setIsStarting(false);
+      isTransitioningRef.current = false;
+      return;
+    }
 
     const service = new ProcessAudioService({
       testingMode: isTestingMode,
@@ -339,6 +558,9 @@ const App: React.FC = () => {
                 : meal
             )
           );
+          void nutritionRepository
+            .updateMealTranscript(sessionUserId, activeMealId, text)
+            .catch((updateError) => console.error(updateError));
         }
       },
       onTestingComplete: (transcript) => {
@@ -360,6 +582,11 @@ const App: React.FC = () => {
         const activeMealId = activeRecordingMealIdRef.current;
         if (activeMealId && recordingFoodsCountRef.current === 0) {
           setMeals((prev) => prev.filter((meal) => meal.id !== activeMealId));
+          void nutritionRepository.deleteMeal(sessionUserId, activeMealId).catch((deleteError) => {
+            console.error(deleteError);
+            const message = deleteError instanceof Error ? deleteError.message : 'Failed to delete empty meal';
+            setError(message);
+          });
         }
         activeRecordingMealIdRef.current = null;
         recordingFoodsCountRef.current = 0;
@@ -391,7 +618,10 @@ const App: React.FC = () => {
       setIsProcessing(false);
       serviceRef.current = null;
       setLiveService(null);
-      setMeals((prev) => prev.filter((meal) => meal.id !== recordingMealId));
+      setMeals((prev) => prev.filter((meal) => meal.id !== recordingMeal.id));
+      void nutritionRepository.deleteMeal(sessionUserId, recordingMeal.id).catch((deleteError) => {
+        console.error(deleteError);
+      });
       activeRecordingMealIdRef.current = null;
       recordingFoodsCountRef.current = 0;
       isTransitioningRef.current = false;
@@ -400,7 +630,7 @@ const App: React.FC = () => {
       setIsStarting(false);
       isTransitioningRef.current = false;
     }
-  }, [createMealGroup, handleFoodLogged, isRecording, isStarting, isProcessing, selectedLanguage, t.startFailed]);
+  }, [createMealGroup, handleFoodLogged, isRecording, isStarting, isProcessing, selectedLanguage, sessionUserId, t.startFailed]);
 
   const stopRecording = useCallback(() => {
     if (isTransitioningRef.current || !serviceRef.current || !isRecording) return;
@@ -421,6 +651,102 @@ const App: React.FC = () => {
     }
     startRecording();
   }, [isRecording, startRecording, stopRecording]);
+
+  const handleGoalsChange = useCallback<React.Dispatch<React.SetStateAction<NutritionGoals>>>((update) => {
+    const previousGoals = goals;
+    let nextGoals = previousGoals;
+    setGoals((prev) => {
+      const computed = typeof update === 'function' ? update(prev) : update;
+      nextGoals = computed;
+      return computed;
+    });
+    if (!sessionUserId) return;
+    void (async () => {
+      try {
+        await nutritionRepository.upsertGoals(sessionUserId, nextGoals);
+      } catch (e) {
+        console.error(e);
+        const message = e instanceof Error ? e.message : 'Failed to save goals';
+        setError(message);
+        setGoals(previousGoals);
+      }
+    })();
+  }, [goals, sessionUserId]);
+
+  const handleEmailPasswordAuth = useCallback(async (mode: AuthMode, email: string, password: string) => {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail || !password) return;
+    setAuthPendingAction(mode);
+    setAuthError(null);
+    setAuthNotice(null);
+
+    if (mode === 'signIn') {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+      if (signInError) {
+        setAuthError(toFriendlyAuthMessage(signInError.message));
+      }
+      setAuthPendingAction(null);
+      return;
+    }
+
+    const { error: signUpError } = await supabase.auth.signUp({
+      email: normalizedEmail,
+      password,
+    });
+    if (signUpError) {
+      setAuthError(toFriendlyAuthMessage(signUpError.message));
+      setAuthPendingAction(null);
+      return;
+    }
+    setAuthNotice('Account created. Check your email for a confirmation link before signing in.');
+    setAuthPendingAction(null);
+  }, []);
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setAuthPendingAction('google');
+    setAuthError(null);
+    setAuthNotice(null);
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: getOAuthRedirectUrl(),
+      },
+    });
+    if (oauthError) {
+      setAuthError(toFriendlyAuthMessage(oauthError.message));
+      setAuthPendingAction(null);
+    }
+  }, []);
+
+  const handleSignOut = useCallback(async () => {
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) {
+      setError(signOutError.message);
+    }
+  }, []);
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-stone-50 text-stone-900 pb-32">
+        <div className="max-w-4xl mx-auto px-4 py-12 text-sm text-stone-500">Loading session...</div>
+      </div>
+    );
+  }
+
+  if (!sessionUserId) {
+    return (
+      <AuthScreen
+        onEmailPasswordAuth={handleEmailPasswordAuth}
+        onGoogleSignIn={handleGoogleSignIn}
+        authError={authError}
+        authNotice={authNotice}
+        pendingAction={authPendingAction}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-stone-50 text-stone-900 pb-32">
@@ -453,11 +779,21 @@ const App: React.FC = () => {
                 </option>
               ))}
             </select>
-            <div className="h-10 w-10 bg-stone-200 rounded-full flex items-center justify-center text-stone-500">
-              <User size={20} />
-            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="h-10 rounded-xl border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-600 hover:bg-stone-50"
+            >
+              Sign out
+            </button>
           </div>
         </header>
+
+        {isDataLoading && (
+          <div className="mb-4 rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs text-stone-600">
+            Syncing your data...
+          </div>
+        )}
 
         {/* Error Banner */}
         {error && (
@@ -517,17 +853,35 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Dashboard & Table Container */}
+        {/* Page Content */}
         <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-700 fill-mode-both">
-          <Dashboard stats={stats} language={selectedLanguage} />
-          <FoodTable
-            items={items}
-            meals={meals}
-            onMoveItem={moveItemToMeal}
-            onRemove={removeItem}
-            onEditQuantity={editItemQuantity}
-            language={selectedLanguage}
-          />
+          {activeTab === 'today' && (
+            <>
+              <Dashboard stats={stats} goals={goals} language={selectedLanguage} />
+              <FoodTable
+                items={items}
+                meals={meals}
+                onMoveItem={moveItemToMeal}
+                onRemove={removeItem}
+                onEditQuantity={editItemQuantity}
+                language={selectedLanguage}
+              />
+            </>
+          )}
+
+          {activeTab === 'history' && (
+            <div className="rounded-2xl border border-stone-200 bg-white px-6 py-8 text-sm text-stone-500">
+              {t.historyComingSoon}
+            </div>
+          )}
+
+          {activeTab === 'goals' && (
+            <Goals
+              goals={goals}
+              onGoalsChange={handleGoalsChange}
+              language={selectedLanguage}
+            />
+          )}
         </div>
       </div>
 
@@ -555,40 +909,81 @@ const App: React.FC = () => {
       )}
 
       {/* Bottom Navigation Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 h-20 px-6 z-50 flex items-center justify-between shadow-[0_-4px_20px_rgba(0,0,0,0.03)] pb-safe">
-        <button className="flex flex-col items-center gap-1 text-stone-400 hover:text-stone-900 transition-colors w-16">
-          <Home size={24} strokeWidth={2.5} className="text-stone-900" />
-          <span className="text-[10px] font-bold text-stone-900">{t.today}</span>
-        </button>
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 h-20 px-4 z-50 shadow-[0_-4px_20px_rgba(0,0,0,0.03)] pb-safe">
+        <div className="relative h-full">
+          <div className="grid h-full grid-cols-3 items-center">
+            <div className="flex items-center justify-start gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab('today')}
+                className={`flex flex-col items-center gap-1 transition-colors w-16 ${
+                  activeTab === 'today'
+                    ? 'text-stone-900'
+                    : 'text-stone-400 hover:text-stone-900'
+                }`}
+              >
+                <Home size={24} strokeWidth={2.5} className={activeTab === 'today' ? 'text-stone-900' : undefined} />
+                <span className={`text-[10px] ${activeTab === 'today' ? 'font-bold text-stone-900' : 'font-medium'}`}>{t.today}</span>
+              </button>
 
-        {/* Central Voice Button */}
-        <div className="relative -top-6">
-           {isRecording && (
-             <div className="absolute inset-0 bg-orange-500 rounded-full animate-ping opacity-20"></div>
-           )}
-           <button
-             type="button"
-             onClick={handleVoiceButtonClick}
-             onContextMenu={(e) => e.preventDefault()}
-             disabled={isStarting || isProcessing}
-            aria-label={isRecording ? t.stopVoiceRecording : t.startVoiceRecording}
-             className={`
-               h-20 w-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl border-4 border-stone-50 touch-manipulation
-               ${isRecording 
-                 ? 'bg-orange-500 text-white scale-110 shadow-orange-500/30' 
-                 : isStarting || isProcessing
-                   ? 'bg-stone-500 text-white cursor-not-allowed'
-                   : 'bg-stone-900 text-white hover:bg-stone-800 hover:scale-105 active:scale-95'}
-             `}
-           >
-             <Mic size={32} />
-           </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('history')}
+                className={`flex flex-col items-center gap-1 transition-colors w-16 ${
+                  activeTab === 'history'
+                    ? 'text-stone-900'
+                    : 'text-stone-400 hover:text-stone-900'
+                }`}
+              >
+                <List size={24} strokeWidth={2.5} />
+                <span className={`text-[10px] ${activeTab === 'history' ? 'font-bold text-stone-900' : 'font-medium'}`}>{t.history}</span>
+              </button>
+            </div>
+
+            <div />
+
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setActiveTab('goals')}
+                className={`flex flex-col items-center gap-1 transition-colors w-16 ${
+                  activeTab === 'goals'
+                    ? 'text-stone-900'
+                    : 'text-stone-400 hover:text-stone-900'
+                }`}
+              >
+                <Target size={24} strokeWidth={2.5} />
+                <span className={`text-[10px] ${activeTab === 'goals' ? 'font-bold text-stone-900' : 'font-medium'}`}>{t.goals}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Central Voice Button */}
+          <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-6">
+            <div className="relative">
+              {isRecording && (
+                <div className="absolute inset-0 bg-orange-500 rounded-full animate-ping opacity-20"></div>
+              )}
+              <button
+                type="button"
+                onClick={handleVoiceButtonClick}
+                onContextMenu={(e) => e.preventDefault()}
+                disabled={isStarting || isProcessing}
+                aria-label={isRecording ? t.stopVoiceRecording : t.startVoiceRecording}
+                className={`
+                  h-20 w-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl border-4 border-stone-50 touch-manipulation
+                  ${isRecording 
+                    ? 'bg-orange-500 text-white scale-110 shadow-orange-500/30' 
+                    : isStarting || isProcessing
+                      ? 'bg-stone-500 text-white cursor-not-allowed'
+                      : 'bg-stone-900 text-white hover:bg-stone-800 hover:scale-105 active:scale-95'}
+                `}
+              >
+                <Mic size={32} />
+              </button>
+            </div>
+          </div>
         </div>
-
-        <button className="flex flex-col items-center gap-1 text-stone-400 hover:text-stone-900 transition-colors w-16">
-          <List size={24} strokeWidth={2.5} />
-          <span className="text-[10px] font-medium">{t.history}</span>
-        </button>
       </div>
     </div>
   );

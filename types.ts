@@ -26,3 +26,11 @@ export interface DailyStats {
   totalFat: number;
   totalFiber: number;
 }
+
+export interface NutritionGoals {
+  calories?: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  fiber?: number;
+}

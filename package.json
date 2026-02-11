@@ -10,10 +10,13 @@
     "dev": "vite",
     "dev:full": "vercel dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "supabase:types": "npx supabase gen types typescript --linked > lib/database.types.ts",
+    "supabase:migration:new": "npx supabase migration new"
   },
   "dependencies": {
     "@google/genai": "^1.40.0",
+    "@supabase/supabase-js": "^2.78.0",
     "lucide-react": "^0.563.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

@@ -1,9 +1,10 @@
 import React from 'react';
-import { DailyStats } from '../types';
+import { DailyStats, NutritionGoals } from '../types';
 import { Flame, Beef, Wheat, Droplet, Sprout } from 'lucide-react';
 
 interface DashboardProps {
   stats: DailyStats;
+  goals: NutritionGoals;
   language: 'en-US' | 'pt-BR';
 }
 
@@ -28,14 +29,14 @@ const StatCard: React.FC<{
         <span className="text-3xl font-bold text-stone-900 tracking-tight">{Math.round(value)}</span>
         <span className="text-sm text-stone-400 font-medium">{unit}</span>
       </div>
-      {target && (
+      {target != null && (
         <p className="text-xs text-stone-400 mt-1 font-medium">{targetLabel}: {target}{unit}</p>
       )}
     </div>
   </div>
 );
 
-const Dashboard: React.FC<DashboardProps> = ({ stats, language }) => {
+const Dashboard: React.FC<DashboardProps> = ({ stats, goals, language }) => {
   const isPortuguese = language === 'pt-BR';
   const copy = {
     dailySummary: isPortuguese ? 'Resumo Diario' : 'Daily Summary',
@@ -60,6 +61,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, language }) => {
           unit="kcal" 
           Icon={Flame} 
           colorClass="text-orange-500" 
+          target={goals.calories}
           targetLabel={copy.target}
         />
         <StatCard 
@@ -68,7 +70,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, language }) => {
           unit="g" 
           Icon={Beef} 
           colorClass="text-red-500" 
-          target={150}
+          target={goals.protein}
           targetLabel={copy.target}
         />
         <StatCard 
@@ -77,6 +79,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, language }) => {
           unit="g" 
           Icon={Wheat} 
           colorClass="text-amber-500" 
+          target={goals.carbs}
           targetLabel={copy.target}
         />
         <StatCard 
@@ -85,6 +88,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, language }) => {
           unit="g" 
           Icon={Droplet} 
           colorClass="text-sky-500" 
+          target={goals.fat}
           targetLabel={copy.target}
         />
         <StatCard 
@@ -93,6 +97,7 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, language }) => {
           unit="g" 
           Icon={Sprout} 
           colorClass="text-emerald-500" 
+          target={goals.fiber}
           targetLabel={copy.target}
         />
       </div>
