@@ -79,6 +79,59 @@ const formatMealLabel = (date: Date, language: SupportedLanguageCode = 'en-US'):
   return language === 'pt-BR' ? `Refeicao ${time}` : `Meal ${time}`;
 };
 
+const parseQuantityAmount = (quantity: string): number | null => {
+  const normalized = quantity.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const mixedFractionMatch = normalized.match(/(\d+)\s+(\d+)\/(\d+)/);
+  if (mixedFractionMatch) {
+    const whole = Number(mixedFractionMatch[1]);
+    const numerator = Number(mixedFractionMatch[2]);
+    const denominator = Number(mixedFractionMatch[3]);
+    if (denominator > 0) return whole + numerator / denominator;
+  }
+
+  const fractionMatch = normalized.match(/(\d+)\/(\d+)/);
+  if (fractionMatch) {
+    const numerator = Number(fractionMatch[1]);
+    const denominator = Number(fractionMatch[2]);
+    if (denominator > 0) return numerator / denominator;
+  }
+
+  const decimalMatch = normalized.match(/(\d+(?:[.,]\d+)?)/);
+  if (!decimalMatch) return null;
+
+  const value = Number(decimalMatch[1].replace(',', '.'));
+  return Number.isFinite(value) && value > 0 ? value : null;
+};
+
+const formatScaledNumber = (value: number): string => {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(Math.trunc(rounded)) : String(rounded);
+};
+
+const scaleMicronutrientsText = (micronutrients: string | undefined, factor: number): string | undefined => {
+  if (!micronutrients) return micronutrients;
+  return micronutrients.replace(/\d+(?:[.,]\d+)?/g, (raw) => {
+    const parsed = Number(raw.replace(',', '.'));
+    if (!Number.isFinite(parsed)) return raw;
+    return formatScaledNumber(parsed * factor);
+  });
+};
+
+const scaleFoodNutrition = (item: FoodItem, factor: number): FoodItem => {
+  const safeFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  return {
+    ...item,
+    calories: Math.max(0, Math.round(item.calories * safeFactor)),
+    protein: Math.max(0, Number(formatScaledNumber(item.protein * safeFactor))),
+    carbs: Math.max(0, Number(formatScaledNumber(item.carbs * safeFactor))),
+    fat: Math.max(0, Number(formatScaledNumber(item.fat * safeFactor))),
+    fiber: Math.max(0, Number(formatScaledNumber(item.fiber * safeFactor))),
+    micronutrients: scaleMicronutrientsText(item.micronutrients, safeFactor),
+  };
+};
+
 const loadPersistedData = (): { items: FoodItem[]; meals: MealGroup[] } => {
   try {
     const rawItems = localStorage.getItem(ITEMS_STORAGE_KEY);
@@ -235,6 +288,25 @@ const App: React.FC = () => {
       prev.map((item) =>
         item.id === itemId
           ? { ...item, mealId: targetMealId }
+          : item
+      )
+    );
+  }, []);
+
+  const editItemQuantity = useCallback((itemId: string, quantity: string) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === itemId
+          ? (() => {
+              const previousAmount = parseQuantityAmount(item.quantity);
+              const nextAmount = parseQuantityAmount(quantity);
+              if (!previousAmount || !nextAmount) {
+                return { ...item, quantity };
+              }
+              const factor = nextAmount / previousAmount;
+              const scaled = scaleFoodNutrition(item, factor);
+              return { ...scaled, quantity };
+            })()
           : item
       )
     );
@@ -448,7 +520,14 @@ const App: React.FC = () => {
         {/* Dashboard & Table Container */}
         <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-700 fill-mode-both">
           <Dashboard stats={stats} language={selectedLanguage} />
-          <FoodTable items={items} meals={meals} onMoveItem={moveItemToMeal} onRemove={removeItem} language={selectedLanguage} />
+          <FoodTable
+            items={items}
+            meals={meals}
+            onMoveItem={moveItemToMeal}
+            onRemove={removeItem}
+            onEditQuantity={editItemQuantity}
+            language={selectedLanguage}
+          />
         </div>
       </div>
 

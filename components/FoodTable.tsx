@@ -7,12 +7,15 @@ interface FoodTableProps {
   meals: MealGroup[];
   onRemove: (id: string) => void;
   onMoveItem: (itemId: string, targetMealId: string) => void;
+  onEditQuantity: (itemId: string, quantity: string) => void;
   language: 'en-US' | 'pt-BR';
 }
 
-const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveItem, language }) => {
+const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveItem, onEditQuantity, language }) => {
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dropMealId, setDropMealId] = useState<string | null>(null);
+  const [editingItem, setEditingItem] = useState<FoodItem | null>(null);
+  const [quantityDraft, setQuantityDraft] = useState('');
   const isPortuguese = language === 'pt-BR';
   const copy = {
     meal: isPortuguese ? 'Refeicao' : 'Meal',
@@ -26,7 +29,29 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
     fatShort: isPortuguese ? 'Gord' : 'F',
     fiberShort: isPortuguese ? 'Fib' : 'Fi',
     removeItem: isPortuguese ? 'Remover item' : 'Remove item',
+    editQuantityTitle: isPortuguese ? 'Editar quantidade' : 'Edit quantity',
+    quantityPlaceholder: isPortuguese ? 'Ex.: 2 fatias, 1 xicara...' : 'E.g. 2 slices, 1 cup...',
+    cancel: isPortuguese ? 'Cancelar' : 'Cancel',
+    save: isPortuguese ? 'Salvar' : 'Save',
+    tapToEditHint: isPortuguese ? 'Toque em um item para editar a quantidade.' : 'Tap an item to edit quantity.',
     noMealsYet: isPortuguese ? 'Nenhuma refeicao ainda.' : 'No meals yet.',
+  };
+  const isSaveDisabled = quantityDraft.trim().length === 0;
+
+  const openEditModal = (item: FoodItem) => {
+    setEditingItem(item);
+    setQuantityDraft(item.quantity);
+  };
+
+  const closeEditModal = () => {
+    setEditingItem(null);
+    setQuantityDraft('');
+  };
+
+  const saveEditedQuantity = () => {
+    if (!editingItem || isSaveDisabled) return;
+    onEditQuantity(editingItem.id, quantityDraft.trim());
+    closeEditModal();
   };
 
   const mealSections = useMemo(() => {
@@ -78,9 +103,10 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
     <div className="w-full mt-10 pb-10">
       <div className="flex items-center justify-between mb-4 px-2">
          <h2 className="text-xl font-bold text-stone-900 tracking-tight">{copy.loggedMeals}</h2>
+         <span className="text-xs text-stone-500">{copy.tapToEditHint}</span>
       </div>
       <div className="space-y-4">
-        {mealSections.map(({ meal, items: mealItems }) => {
+        {mealSections.map(({ meal, items: mealItems }, mealIndex) => {
           const totals = mealItems.reduce(
             (acc, item) => ({
               calories: acc.calories + item.calories,
@@ -91,6 +117,11 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
             }),
             { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 }
           );
+          const mealTime = meal.createdAt.toLocaleTimeString(language, {
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+          const mealLabel = `${copy.meal} ${mealIndex + 1} - ${mealTime}`;
 
           return (
             <div
@@ -120,11 +151,12 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
               <div className="border-b border-stone-100 bg-stone-50 px-5 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-semibold text-stone-900">{meal.label}</div>
-                    <div className="text-xs text-stone-500">
-                      {meal.createdAt.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}
-                      {meal.transcriptSnippet ? ` · "${meal.transcriptSnippet}"` : ''}
-                    </div>
+                    <div className="text-sm font-semibold text-stone-900">{mealLabel}</div>
+                    {meal.transcriptSnippet && (
+                      <div className="text-xs text-stone-500">
+                        {`"${meal.transcriptSnippet}"`}
+                      </div>
+                    )}
                   </div>
                   <div className="text-xs text-stone-600">
                     {totals.calories} kcal · {copy.proteinShort} {totals.protein}g · {copy.carbsShort} {totals.carbs}g · {copy.fatShort} {totals.fat}g · {copy.fiberShort} {totals.fiber}g
@@ -150,6 +182,7 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                       <tr
                         key={item.id}
                         draggable
+                        onClick={() => openEditModal(item)}
                         onDragStart={(e) => {
                           setDraggedItemId(item.id);
                           e.dataTransfer.setData('text/plain', item.id);
@@ -177,7 +210,10 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                         <td className="p-5 text-right text-stone-600">{item.fiber}g</td>
                         <td className="p-5 text-center">
                           <button
-                            onClick={() => onRemove(item.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemove(item.id);
+                            }}
                             className="p-2 rounded-full text-stone-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-100"
                             title={copy.removeItem}
                             aria-label={copy.removeItem}
@@ -197,6 +233,48 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
       {mealSections.length === 0 && (
         <div className="mt-3 text-sm text-stone-400 px-2">
           {copy.noMealsYet}
+        </div>
+      )}
+
+      {editingItem && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center px-4"
+          onClick={closeEditModal}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl border border-stone-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-stone-900">{copy.editQuantityTitle}</h3>
+            <p className="mt-1 text-sm text-stone-500">{editingItem.name}</p>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-stone-700 mb-2">{copy.qty}</label>
+              <input
+                type="text"
+                value={quantityDraft}
+                onChange={(e) => setQuantityDraft(e.target.value)}
+                className="w-full rounded-xl border border-stone-300 px-3 py-2 text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-300"
+                placeholder={copy.quantityPlaceholder}
+              />
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeEditModal}
+                className="rounded-xl border border-stone-300 px-4 py-2 text-sm font-medium text-stone-600 hover:bg-stone-50"
+              >
+                {copy.cancel}
+              </button>
+              <button
+                type="button"
+                onClick={saveEditedQuantity}
+                disabled={isSaveDisabled}
+                className="rounded-xl bg-stone-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-stone-800"
+              >
+                {copy.save}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
