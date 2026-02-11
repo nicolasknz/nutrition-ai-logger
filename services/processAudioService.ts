@@ -55,7 +55,7 @@ export interface ApiDebugInfo {
 export interface ProcessAudioServiceConfig {
   /** When true, transcribe with browser Web Speech API only; do not send to /api/process-audio (no LLM). */
   testingMode?: boolean;
-  onFoodLogged: (food: Omit<FoodItem, 'id' | 'timestamp'>) => void;
+  onFoodLogged: (food: Omit<FoodItem, 'id' | 'timestamp' | 'mealId'>) => void;
   onAudioData: (amplitude: number) => void;
   onTranscription: (text: string) => void;
   /** In testing mode only: called with final transcript before onClose. */
@@ -81,6 +81,7 @@ export class ProcessAudioService {
   private recognition: SpeechRecognitionInstance | null = null;
   private testingTranscript = '';
   private _testingFallback: ReturnType<typeof setTimeout> | 0 = 0;
+  private _testingPulseInterval: ReturnType<typeof setInterval> | 0 = 0;
   /** In testing mode, only close after user explicitly requests stop. */
   private manualStopRequested = false;
 
@@ -90,6 +91,24 @@ export class ProcessAudioService {
 
   private logTesting(event: string): void {
     this.config.onTestingEvent?.(event);
+  }
+
+  /** Visual-only pulse so bars move in testing mode without taking mic ownership. */
+  private startTestingPulse(): void {
+    if (this._testingPulseInterval) return;
+    this._testingPulseInterval = setInterval(() => {
+      if (!this.active || !this.config.testingMode) return;
+      const amp = 0.05 + Math.random() * 0.2;
+      this.config.onAudioData(amp);
+    }, 120);
+  }
+
+  private stopTestingPulse(): void {
+    if (this._testingPulseInterval) {
+      clearInterval(this._testingPulseInterval);
+      this._testingPulseInterval = 0;
+    }
+    this.config.onAudioData(0);
   }
 
   async start(): Promise<void> {
@@ -104,7 +123,7 @@ export class ProcessAudioService {
         if (SpeechRecognitionCtor) {
           // IMPORTANT: In testing mode, avoid opening getUserMedia simultaneously.
           // On many mobile browsers, SpeechRecognition returns empty results if mic is already in use.
-          this.config.onAudioData(0);
+          this.startTestingPulse();
           this.logTesting(`speech recognition available (${navigator.language || 'en-US'})`);
           this.recognition = new SpeechRecognitionCtor();
           this.recognition.continuous = true;
@@ -121,6 +140,8 @@ export class ProcessAudioService {
               } else {
                 this.logTesting(`interim: ${text}`);
               }
+              // Small visual spike when recognizer emits text.
+              this.config.onAudioData(0.35 + Math.random() * 0.25);
             }
             // Show live transcript (final + any interim) for overlay
             let live = this.testingTranscript;
@@ -147,6 +168,7 @@ export class ProcessAudioService {
                 this.config.onTranscription(final);
                 this.config.onTestingComplete?.(final);
               }
+              this.stopTestingPulse();
               this.recognition = null;
               this.config.onClose();
               return;
@@ -172,6 +194,7 @@ export class ProcessAudioService {
           this.recognition.start();
         } else {
           this.logTesting('speech recognition unavailable on this browser');
+          this.stopTestingPulse();
           this.config.onError(new Error('Testing mode requires SpeechRecognition (e.g. Chrome)'));
         }
         return;
@@ -231,6 +254,7 @@ export class ProcessAudioService {
           this.config.onTranscription(final);
           this.config.onTestingComplete?.(final);
         }
+        this.stopTestingPulse();
         this.config.onClose();
         this.recognition = null;
       }, 2500);
@@ -335,6 +359,7 @@ export class ProcessAudioService {
       clearTimeout(this._testingFallback);
       this._testingFallback = 0;
     }
+    this.stopTestingPulse();
     if (this.recognition) {
       this.recognition.abort();
       this.recognition = null; // onend may still fire; handler checks rec and skips if nulled
@@ -355,7 +380,6 @@ export class ProcessAudioService {
       this.audioContext.close();
       this.audioContext = null;
     }
-    this.config.onAudioData(0);
     this.config.onClose();
   }
 }

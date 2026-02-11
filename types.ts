@@ -1,5 +1,6 @@
 export interface FoodItem {
   id: string;
+  mealId: string;
   name: string;
   quantity: string;
   calories: number;
@@ -9,6 +10,13 @@ export interface FoodItem {
   fiber: number;
   micronutrients?: string;
   timestamp: Date;
+}
+
+export interface MealGroup {
+  id: string;
+  label: string;
+  createdAt: Date;
+  transcriptSnippet?: string;
 }
 
 export interface DailyStats {

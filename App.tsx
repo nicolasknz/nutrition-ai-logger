@@ -4,9 +4,81 @@ import { ProcessAudioService, type ApiDebugInfo } from './services/processAudioS
 import Visualizer from './components/Visualizer';
 import FoodTable from './components/FoodTable';
 import Dashboard from './components/Dashboard';
-import { FoodItem, DailyStats } from './types';
+import { FoodItem, DailyStats, MealGroup } from './types';
 
 const isTestingMode = import.meta.env.VITE_TESTING_MODE === 'true';
+const ITEMS_STORAGE_KEY = 'nutrivoice-items';
+const MEALS_STORAGE_KEY = 'nutrivoice-meals';
+
+type StoredFoodItem = Omit<FoodItem, 'timestamp'> & {
+  timestamp: string | Date;
+  mealId?: string;
+};
+type StoredMealGroup = Omit<MealGroup, 'createdAt'> & { createdAt: string | Date };
+
+const formatMealLabel = (date: Date): string => {
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `Meal ${time}`;
+};
+
+const loadPersistedData = (): { items: FoodItem[]; meals: MealGroup[] } => {
+  try {
+    const rawItems = localStorage.getItem(ITEMS_STORAGE_KEY);
+    const parsedItems: StoredFoodItem[] = rawItems ? JSON.parse(rawItems) : [];
+
+    const rawMeals = localStorage.getItem(MEALS_STORAGE_KEY);
+    const parsedMeals: StoredMealGroup[] = rawMeals ? JSON.parse(rawMeals) : [];
+
+    const meals: MealGroup[] = parsedMeals.map((meal) => ({
+      ...meal,
+      createdAt: new Date(meal.createdAt),
+    }));
+
+    let legacyMealId: string | null = null;
+    const items: FoodItem[] = parsedItems.map((item) => {
+      if (!item.mealId) {
+        if (!legacyMealId) legacyMealId = crypto.randomUUID();
+        return {
+          ...item,
+          mealId: legacyMealId,
+          timestamp: new Date(item.timestamp),
+        };
+      }
+
+      return {
+        ...item,
+        mealId: item.mealId,
+        timestamp: new Date(item.timestamp),
+      };
+    });
+
+    if (legacyMealId) {
+      meals.push({
+        id: legacyMealId,
+        label: 'Imported Meal',
+        createdAt: new Date(),
+      });
+    }
+
+    const existingMealIds = new Set(meals.map((meal) => meal.id));
+    for (const item of items) {
+      if (!existingMealIds.has(item.mealId)) {
+        meals.push({
+          id: item.mealId,
+          label: formatMealLabel(item.timestamp),
+          createdAt: item.timestamp,
+        });
+        existingMealIds.add(item.mealId);
+      }
+    }
+
+    meals.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return { items, meals };
+  } catch (e) {
+    console.error('Failed to load items from local storage', e);
+    return { items: [], meals: [] };
+  }
+};
 
 const App: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
@@ -19,21 +91,9 @@ const App: React.FC = () => {
   /** In testing mode: low-level speech lifecycle events (start/result/error/end). */
   const [testingEvents, setTestingEvents] = useState<string[]>([]);
   
-  // Initialize items from localStorage
-  const [items, setItems] = useState<FoodItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('nutrivoice-items');
-      if (saved) {
-        return JSON.parse(saved).map((item: any) => ({
-          ...item,
-          timestamp: new Date(item.timestamp)
-        }));
-      }
-    } catch (e) {
-      console.error("Failed to load items from local storage", e);
-    }
-    return [];
-  });
+  const initialData = useMemo(loadPersistedData, []);
+  const [items, setItems] = useState<FoodItem[]>(initialData.items);
+  const [meals, setMeals] = useState<MealGroup[]>(initialData.meals);
 
   const [liveService, setLiveService] = useState<ProcessAudioService | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,10 +102,26 @@ const App: React.FC = () => {
   const serviceRef = useRef<ProcessAudioService | null>(null);
   const isTransitioningRef = useRef(false);
   const lastTranscriptRef = useRef('');
+  const activeRecordingMealIdRef = useRef<string | null>(null);
+  const recordingFoodsCountRef = useRef(0);
 
-  // Persist items to localStorage whenever they change
+  // Persist items/meals to localStorage whenever they change
   useEffect(() => {
-    localStorage.setItem('nutrivoice-items', JSON.stringify(items));
+    localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(items));
+  }, [items]);
+  useEffect(() => {
+    localStorage.setItem(MEALS_STORAGE_KEY, JSON.stringify(meals));
+  }, [meals]);
+
+  useEffect(() => {
+    setMeals((prevMeals) => {
+      const usedMealIds = new Set(items.map((item) => item.mealId));
+      const activeMealId = activeRecordingMealIdRef.current;
+      const nextMeals = prevMeals.filter(
+        (meal) => usedMealIds.has(meal.id) || meal.id === activeMealId
+      );
+      return nextMeals.length === prevMeals.length ? prevMeals : nextMeals;
+    });
   }, [items]);
 
   // Calculate stats
@@ -59,19 +135,42 @@ const App: React.FC = () => {
     }), { totalCalories: 0, totalProtein: 0, totalCarbs: 0, totalFat: 0, totalFiber: 0 });
   }, [items]);
 
-  const handleFoodLogged = useCallback((foodData: Omit<FoodItem, 'id' | 'timestamp'>) => {
+  const createMealGroup = useCallback((createdAt = new Date()): string => {
+    const meal: MealGroup = {
+      id: crypto.randomUUID(),
+      label: formatMealLabel(createdAt),
+      createdAt,
+    };
+    setMeals((prev) => [meal, ...prev]);
+    return meal.id;
+  }, []);
+
+  const handleFoodLogged = useCallback((foodData: Omit<FoodItem, 'id' | 'timestamp' | 'mealId'>) => {
+    const mealId = activeRecordingMealIdRef.current ?? createMealGroup();
+    recordingFoodsCountRef.current += 1;
     setItems(prev => [
       {
         ...foodData,
         id: crypto.randomUUID(),
+        mealId,
         timestamp: new Date()
       },
       ...prev
     ]);
-  }, []);
+  }, [createMealGroup]);
 
   const removeItem = useCallback((id: string) => {
     setItems(prev => prev.filter(item => item.id !== id));
+  }, []);
+
+  const moveItemToMeal = useCallback((itemId: string, targetMealId: string) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === itemId
+          ? { ...item, mealId: targetMealId }
+          : item
+      )
+    );
   }, []);
 
   const startRecording = useCallback(async () => {
@@ -80,6 +179,9 @@ const App: React.FC = () => {
     setError(null);
     setTranscript("");
     setIsStarting(true);
+    const recordingMealId = createMealGroup();
+    activeRecordingMealIdRef.current = recordingMealId;
+    recordingFoodsCountRef.current = 0;
 
     const service = new ProcessAudioService({
       testingMode: isTestingMode,
@@ -88,6 +190,16 @@ const App: React.FC = () => {
       onTranscription: (text) => {
         lastTranscriptRef.current = text;
         setTranscript(text);
+        const activeMealId = activeRecordingMealIdRef.current;
+        if (activeMealId && text.trim()) {
+          setMeals((prev) =>
+            prev.map((meal) =>
+              meal.id === activeMealId
+                ? { ...meal, transcriptSnippet: text.trim().slice(0, 120) }
+                : meal
+            )
+          );
+        }
       },
       onTestingComplete: (transcript) => {
         setTestingLog(prev => [...prev, transcript].slice(-20));
@@ -105,6 +217,12 @@ const App: React.FC = () => {
         isTransitioningRef.current = false;
       },
       onClose: () => {
+        const activeMealId = activeRecordingMealIdRef.current;
+        if (activeMealId && recordingFoodsCountRef.current === 0) {
+          setMeals((prev) => prev.filter((meal) => meal.id !== activeMealId));
+        }
+        activeRecordingMealIdRef.current = null;
+        recordingFoodsCountRef.current = 0;
         lastTranscriptRef.current = '';
         setIsRecording(false);
         setIsStarting(false);
@@ -133,13 +251,16 @@ const App: React.FC = () => {
       setIsProcessing(false);
       serviceRef.current = null;
       setLiveService(null);
+      setMeals((prev) => prev.filter((meal) => meal.id !== recordingMealId));
+      activeRecordingMealIdRef.current = null;
+      recordingFoodsCountRef.current = 0;
       isTransitioningRef.current = false;
       return;
     } finally {
       setIsStarting(false);
       isTransitioningRef.current = false;
     }
-  }, [handleFoodLogged, isRecording, isStarting, isProcessing]);
+  }, [createMealGroup, handleFoodLogged, isRecording, isStarting, isProcessing]);
 
   const stopRecording = useCallback(() => {
     if (isTransitioningRef.current || !serviceRef.current || !isRecording) return;
@@ -241,7 +362,7 @@ const App: React.FC = () => {
         {/* Dashboard & Table Container */}
         <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-700 fill-mode-both">
           <Dashboard stats={stats} />
-          <FoodTable items={items} onRemove={removeItem} />
+          <FoodTable items={items} meals={meals} onMoveItem={moveItemToMeal} onRemove={removeItem} />
         </div>
       </div>
 
