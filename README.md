@@ -5,6 +5,7 @@ NutriVoice is a voice-first nutrition tracking app built with React and the Goog
 ## Features
 
 - **Voice-activated logging**: Hold the mic, speak what you ate, release to process.
+- **Language option**: Switch between English and Portuguese (BR) from the header.
 - **Multi-item support**: Say "2 bananas and 3 eggs" and both are logged.
 - **Macro tracking**: Calories, protein, carbs, fat, and fiber with a daily summary.
 - **Audio visualizer**: Real-time feedback while recording.

@@ -66,8 +66,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'Server missing GEMINI_API_KEY' });
   }
 
-  const body = req.body as { audioBase64?: string };
+  const body = req.body as { audioBase64?: string; preferredLanguage?: string };
   const audioBase64 = body?.audioBase64;
+  const preferredLanguage = body?.preferredLanguage === 'pt-BR' ? 'pt-BR' : 'en-US';
   if (!audioBase64 || typeof audioBase64 !== 'string') {
     return res.status(400).json({ error: 'Missing audioBase64 in body' });
   }
@@ -80,13 +81,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
+  const languageInstruction =
+    preferredLanguage === 'pt-BR'
+      ? 'The speaker may be using Portuguese (Brazil). Understand Portuguese naturally and extract each food/drink item correctly. Keep the transcription in Portuguese when possible.'
+      : 'The speaker may be using English. Understand English naturally and extract each food/drink item correctly.';
+
   const payload = {
     contents: [
       {
         role: 'user',
         parts: [
           {
-            text: 'Listen to this audio. The user is stating what they ate or drank. For EACH separate food or drink mentioned, call the log_food tool once (e.g. "2 bananas and 3 eggs" = two calls: one for bananas, one for eggs). Use your best estimate for each item. Do not ask questions; just log everything mentioned. If nothing food-related is said, do not call the tool.',
+            text: `Listen to this audio. The user is stating what they ate or drank. ${languageInstruction} For EACH separate food or drink mentioned, call the log_food tool once (e.g. "2 bananas and 3 eggs" = two calls: one for bananas, one for eggs). Use your best estimate for each item. Do not ask questions; just log everything mentioned. If nothing food-related is said, do not call the tool.`,
           },
           {
             inlineData: {

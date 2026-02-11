@@ -9,6 +9,64 @@ import { FoodItem, DailyStats, MealGroup } from './types';
 const isTestingMode = import.meta.env.VITE_TESTING_MODE === 'true';
 const ITEMS_STORAGE_KEY = 'nutrivoice-items';
 const MEALS_STORAGE_KEY = 'nutrivoice-meals';
+const LANGUAGE_STORAGE_KEY = 'nutrivoice-language';
+const LANGUAGE_OPTIONS = [
+  { code: 'en-US', label: 'English' },
+  { code: 'pt-BR', label: 'Portuguese (BR)' },
+] as const;
+type SupportedLanguageCode = (typeof LANGUAGE_OPTIONS)[number]['code'];
+const UI_TEXT = {
+  'en-US': {
+    languageLabel: 'Language',
+    selectLanguageAria: 'Select language',
+    startFailed: 'Failed to start service',
+    processing: 'Processing...',
+    debug: 'Debug:',
+    testingModeNoApi: 'Testing mode - no API call (Web Speech only)',
+    api: 'API:',
+    foods: 'foods',
+    testingBadge: 'Testing',
+    testingLogTitle: 'Log (what you said - not sent to LLM)',
+    testingEmpty: 'Tap mic to start, tap again to stop. Entries appear here.',
+    events: 'Events',
+    eventsEmpty: 'No events yet. Start and stop recording to see speech lifecycle events.',
+    statusStarting: 'Starting',
+    statusProcessing: 'Processing',
+    statusListening: 'Listening',
+    preparingMicrophone: 'Preparing microphone...',
+    finalizing: 'Finalizing...',
+    speakNow: 'Speak now...',
+    today: 'Today',
+    history: 'History',
+    stopVoiceRecording: 'Stop voice recording',
+    startVoiceRecording: 'Start voice recording',
+  },
+  'pt-BR': {
+    languageLabel: 'Idioma',
+    selectLanguageAria: 'Selecionar idioma',
+    startFailed: 'Falha ao iniciar o servico',
+    processing: 'Processando...',
+    debug: 'Depuracao:',
+    testingModeNoApi: 'Modo de teste - sem chamada de API (apenas Web Speech)',
+    api: 'API:',
+    foods: 'alimentos',
+    testingBadge: 'Teste',
+    testingLogTitle: 'Log (o que voce disse - nao enviado ao LLM)',
+    testingEmpty: 'Toque no microfone para iniciar e toque novamente para parar. As entradas aparecem aqui.',
+    events: 'Eventos',
+    eventsEmpty: 'Sem eventos ainda. Inicie e pare a gravacao para ver os eventos de fala.',
+    statusStarting: 'Iniciando',
+    statusProcessing: 'Processando',
+    statusListening: 'Ouvindo',
+    preparingMicrophone: 'Preparando microfone...',
+    finalizing: 'Finalizando...',
+    speakNow: 'Fale agora...',
+    today: 'Hoje',
+    history: 'Historico',
+    stopVoiceRecording: 'Parar gravacao de voz',
+    startVoiceRecording: 'Iniciar gravacao de voz',
+  },
+} as const;
 
 type StoredFoodItem = Omit<FoodItem, 'timestamp'> & {
   timestamp: string | Date;
@@ -16,9 +74,9 @@ type StoredFoodItem = Omit<FoodItem, 'timestamp'> & {
 };
 type StoredMealGroup = Omit<MealGroup, 'createdAt'> & { createdAt: string | Date };
 
-const formatMealLabel = (date: Date): string => {
-  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return `Meal ${time}`;
+const formatMealLabel = (date: Date, language: SupportedLanguageCode = 'en-US'): string => {
+  const time = date.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' });
+  return language === 'pt-BR' ? `Refeicao ${time}` : `Meal ${time}`;
 };
 
 const loadPersistedData = (): { items: FoodItem[]; meals: MealGroup[] } => {
@@ -90,6 +148,11 @@ const App: React.FC = () => {
   const [testingLog, setTestingLog] = useState<string[]>([]);
   /** In testing mode: low-level speech lifecycle events (start/result/error/end). */
   const [testingEvents, setTestingEvents] = useState<string[]>([]);
+  const [selectedLanguage, setSelectedLanguage] = useState<SupportedLanguageCode>(() => {
+    const stored = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (stored === 'pt-BR' || stored === 'en-US') return stored;
+    return 'en-US';
+  });
   
   const initialData = useMemo(loadPersistedData, []);
   const [items, setItems] = useState<FoodItem[]>(initialData.items);
@@ -104,6 +167,7 @@ const App: React.FC = () => {
   const lastTranscriptRef = useRef('');
   const activeRecordingMealIdRef = useRef<string | null>(null);
   const recordingFoodsCountRef = useRef(0);
+  const t = UI_TEXT[selectedLanguage];
 
   // Persist items/meals to localStorage whenever they change
   useEffect(() => {
@@ -112,6 +176,9 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(MEALS_STORAGE_KEY, JSON.stringify(meals));
   }, [meals]);
+  useEffect(() => {
+    localStorage.setItem(LANGUAGE_STORAGE_KEY, selectedLanguage);
+  }, [selectedLanguage]);
 
   useEffect(() => {
     setMeals((prevMeals) => {
@@ -138,12 +205,12 @@ const App: React.FC = () => {
   const createMealGroup = useCallback((createdAt = new Date()): string => {
     const meal: MealGroup = {
       id: crypto.randomUUID(),
-      label: formatMealLabel(createdAt),
+      label: formatMealLabel(createdAt, selectedLanguage),
       createdAt,
     };
     setMeals((prev) => [meal, ...prev]);
     return meal.id;
-  }, []);
+  }, [selectedLanguage]);
 
   const handleFoodLogged = useCallback((foodData: Omit<FoodItem, 'id' | 'timestamp' | 'mealId'>) => {
     const mealId = activeRecordingMealIdRef.current ?? createMealGroup();
@@ -185,6 +252,7 @@ const App: React.FC = () => {
 
     const service = new ProcessAudioService({
       testingMode: isTestingMode,
+      language: selectedLanguage,
       onFoodLogged: handleFoodLogged,
       onAudioData: (amp) => setAmplitude(amp),
       onTranscription: (text) => {
@@ -246,7 +314,7 @@ const App: React.FC = () => {
       setIsRecording(true);
     } catch (e) {
       console.error(e);
-      setError("Failed to start service");
+      setError(t.startFailed);
       setIsStarting(false);
       setIsProcessing(false);
       serviceRef.current = null;
@@ -260,7 +328,7 @@ const App: React.FC = () => {
       setIsStarting(false);
       isTransitioningRef.current = false;
     }
-  }, [createMealGroup, handleFoodLogged, isRecording, isStarting, isProcessing]);
+  }, [createMealGroup, handleFoodLogged, isRecording, isStarting, isProcessing, selectedLanguage, t.startFailed]);
 
   const stopRecording = useCallback(() => {
     if (isTransitioningRef.current || !serviceRef.current || !isRecording) return;
@@ -293,11 +361,29 @@ const App: React.FC = () => {
               NutriVoice
             </h1>
             <p className="text-stone-500 text-sm mt-1">
-              {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long'})}
+              {new Date().toLocaleDateString(selectedLanguage, { weekday: 'long', day: 'numeric', month: 'long'})}
             </p>
           </div>
-          <div className="h-10 w-10 bg-stone-200 rounded-full flex items-center justify-center text-stone-500">
-             <User size={20} />
+          <div className="flex items-center gap-2">
+            <label htmlFor="language-select" className="sr-only">
+              {t.languageLabel}
+            </label>
+            <select
+              id="language-select"
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value as SupportedLanguageCode)}
+              className="h-10 rounded-xl border border-stone-200 bg-white px-3 text-sm text-stone-700 focus:outline-none focus:ring-2 focus:ring-stone-300"
+              aria-label={t.selectLanguageAria}
+            >
+              {LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.code} value={option.code}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <div className="h-10 w-10 bg-stone-200 rounded-full flex items-center justify-center text-stone-500">
+              <User size={20} />
+            </div>
           </div>
         </header>
 
@@ -313,12 +399,12 @@ const App: React.FC = () => {
         {(lastDebug || isTestingMode) && (
           <div className="mb-4 rounded-lg border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-mono text-slate-700">
             {isTestingMode ? (
-              <span><span className="font-semibold">Debug:</span> Testing mode — no API call (Web Speech only)</span>
+              <span><span className="font-semibold">{t.debug}</span> {t.testingModeNoApi}</span>
             ) : lastDebug ? (
               <>
-                <span className="font-semibold">API:</span>{' '}
+                <span className="font-semibold">{t.api}</span>{' '}
                 {lastDebug.status || '—'} {lastDebug.ok ? 'OK' : 'ERR'}
-                {' · foods: '}{lastDebug.foodsCount}
+                {' · '}{t.foods}{': '}{lastDebug.foodsCount}
                 {lastDebug.payloadBytes != null && ` · payload: ${(lastDebug.payloadBytes / 1024).toFixed(1)} KB`}
                 {lastDebug.errorMsg && ` · ${lastDebug.errorMsg}`}
               </>
@@ -330,12 +416,12 @@ const App: React.FC = () => {
         {isTestingMode && (
           <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/80 p-4">
             <div className="flex items-center gap-2 text-amber-800 font-semibold text-sm mb-2">
-              <span className="rounded bg-amber-200 px-2 py-0.5">Testing</span>
-              Log (what you said — not sent to LLM)
+              <span className="rounded bg-amber-200 px-2 py-0.5">{t.testingBadge}</span>
+              {t.testingLogTitle}
             </div>
             <div className="min-h-[4rem] max-h-48 overflow-y-auto rounded-lg bg-white/80 border border-amber-100 p-3 text-sm text-stone-700 font-mono">
               {testingLog.length === 0 ? (
-                <span className="text-stone-400">Tap mic to start, tap again to stop. Entries appear here.</span>
+                <span className="text-stone-400">{t.testingEmpty}</span>
               ) : (
                 <ul className="space-y-2 list-decimal list-inside">
                   {testingLog.filter(Boolean).map((entry, i) => (
@@ -344,10 +430,10 @@ const App: React.FC = () => {
                 </ul>
               )}
             </div>
-            <div className="mt-3 text-amber-800 font-semibold text-sm">Events</div>
+            <div className="mt-3 text-amber-800 font-semibold text-sm">{t.events}</div>
             <div className="mt-2 min-h-[4rem] max-h-52 overflow-y-auto rounded-lg bg-white/80 border border-amber-100 p-3 text-xs text-stone-700 font-mono">
               {testingEvents.length === 0 ? (
-                <span className="text-stone-400">No events yet. Start and stop recording to see speech lifecycle events.</span>
+                <span className="text-stone-400">{t.eventsEmpty}</span>
               ) : (
                 <ul className="space-y-1">
                   {testingEvents.map((entry, i) => (
@@ -361,8 +447,8 @@ const App: React.FC = () => {
 
         {/* Dashboard & Table Container */}
         <div className="w-full animate-in fade-in slide-in-from-bottom-4 duration-700 fill-mode-both">
-          <Dashboard stats={stats} />
-          <FoodTable items={items} meals={meals} onMoveItem={moveItemToMeal} onRemove={removeItem} />
+          <Dashboard stats={stats} language={selectedLanguage} />
+          <FoodTable items={items} meals={meals} onMoveItem={moveItemToMeal} onRemove={removeItem} language={selectedLanguage} />
         </div>
       </div>
 
@@ -376,13 +462,13 @@ const App: React.FC = () => {
                       <span className={`absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75 ${isRecording ? 'animate-ping' : ''}`}></span>
                       <span className="relative inline-flex rounded-full h-3 w-3 bg-orange-500"></span>
                     </span>
-                    {isStarting ? 'Starting' : isProcessing ? 'Processing' : 'Listening'}
+                    {isStarting ? t.statusStarting : isProcessing ? t.statusProcessing : t.statusListening}
                  </div>
                  
                  <Visualizer amplitude={amplitude} active={isRecording} />
                  
                  <p className="text-lg font-medium text-stone-800 min-h-[1.5em]">
-                   {transcript || (isStarting ? "Preparing microphone..." : isProcessing ? "Finalizing..." : "Speak now...")}
+                  {transcript || (isStarting ? t.preparingMicrophone : isProcessing ? t.finalizing : t.speakNow)}
                  </p>
               </div>
            </div>
@@ -393,7 +479,7 @@ const App: React.FC = () => {
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 h-20 px-6 z-50 flex items-center justify-between shadow-[0_-4px_20px_rgba(0,0,0,0.03)] pb-safe">
         <button className="flex flex-col items-center gap-1 text-stone-400 hover:text-stone-900 transition-colors w-16">
           <Home size={24} strokeWidth={2.5} className="text-stone-900" />
-          <span className="text-[10px] font-bold text-stone-900">Today</span>
+          <span className="text-[10px] font-bold text-stone-900">{t.today}</span>
         </button>
 
         {/* Central Voice Button */}
@@ -406,7 +492,7 @@ const App: React.FC = () => {
              onClick={handleVoiceButtonClick}
              onContextMenu={(e) => e.preventDefault()}
              disabled={isStarting || isProcessing}
-             aria-label={isRecording ? "Stop voice recording" : "Start voice recording"}
+            aria-label={isRecording ? t.stopVoiceRecording : t.startVoiceRecording}
              className={`
                h-20 w-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl border-4 border-stone-50 touch-manipulation
                ${isRecording 
@@ -422,7 +508,7 @@ const App: React.FC = () => {
 
         <button className="flex flex-col items-center gap-1 text-stone-400 hover:text-stone-900 transition-colors w-16">
           <List size={24} strokeWidth={2.5} />
-          <span className="text-[10px] font-medium">History</span>
+          <span className="text-[10px] font-medium">{t.history}</span>
         </button>
       </div>
     </div>

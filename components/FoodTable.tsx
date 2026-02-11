@@ -7,11 +7,27 @@ interface FoodTableProps {
   meals: MealGroup[];
   onRemove: (id: string) => void;
   onMoveItem: (itemId: string, targetMealId: string) => void;
+  language: 'en-US' | 'pt-BR';
 }
 
-const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveItem }) => {
+const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveItem, language }) => {
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dropMealId, setDropMealId] = useState<string | null>(null);
+  const isPortuguese = language === 'pt-BR';
+  const copy = {
+    meal: isPortuguese ? 'Refeicao' : 'Meal',
+    emptyPlate: isPortuguese ? 'Seu prato esta vazio.' : 'Your plate is empty.',
+    emptyHint: isPortuguese ? 'Toque no microfone para registrar uma refeicao' : 'Tap the microphone to log a meal',
+    loggedMeals: isPortuguese ? 'Refeicoes Registradas' : 'Logged Meals',
+    food: isPortuguese ? 'Alimento' : 'Food',
+    qty: isPortuguese ? 'Qtd' : 'Qty',
+    proteinShort: isPortuguese ? 'Pr' : 'P',
+    carbsShort: isPortuguese ? 'Carb' : 'C',
+    fatShort: isPortuguese ? 'Gord' : 'F',
+    fiberShort: isPortuguese ? 'Fib' : 'Fi',
+    removeItem: isPortuguese ? 'Remover item' : 'Remove item',
+    noMealsYet: isPortuguese ? 'Nenhuma refeicao ainda.' : 'No meals yet.',
+  };
 
   const mealSections = useMemo(() => {
     const knownMeals = new Map(meals.map((meal) => [meal.id, meal]));
@@ -38,7 +54,7 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
         sections.push({
           meal: {
             id: mealId,
-            label: 'Meal',
+            label: copy.meal,
             createdAt: mealItems[0]?.timestamp ?? new Date(),
           },
           items: mealItems,
@@ -47,13 +63,13 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
     }
 
     return sections;
-  }, [items, meals]);
+  }, [copy.meal, items, meals]);
 
   if (items.length === 0) {
     return (
       <div className="mt-12 flex flex-col items-center justify-center py-20 text-stone-400 border-2 border-dashed border-stone-200 rounded-3xl bg-stone-50/50">
-        <p className="text-lg font-medium text-stone-500">Your plate is empty.</p>
-        <p className="text-sm mt-2 opacity-70">Tap the microphone to log a meal</p>
+        <p className="text-lg font-medium text-stone-500">{copy.emptyPlate}</p>
+        <p className="text-sm mt-2 opacity-70">{copy.emptyHint}</p>
       </div>
     );
   }
@@ -61,7 +77,7 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
   return (
     <div className="w-full mt-10 pb-10">
       <div className="flex items-center justify-between mb-4 px-2">
-         <h2 className="text-xl font-bold text-stone-900 tracking-tight">Logged Meals</h2>
+         <h2 className="text-xl font-bold text-stone-900 tracking-tight">{copy.loggedMeals}</h2>
       </div>
       <div className="space-y-4">
         {mealSections.map(({ meal, items: mealItems }) => {
@@ -106,12 +122,12 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                   <div>
                     <div className="text-sm font-semibold text-stone-900">{meal.label}</div>
                     <div className="text-xs text-stone-500">
-                      {meal.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {meal.createdAt.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}
                       {meal.transcriptSnippet ? ` · "${meal.transcriptSnippet}"` : ''}
                     </div>
                   </div>
                   <div className="text-xs text-stone-600">
-                    {totals.calories} kcal · P {totals.protein}g · C {totals.carbs}g · F {totals.fat}g · Fi {totals.fiber}g
+                    {totals.calories} kcal · {copy.proteinShort} {totals.protein}g · {copy.carbsShort} {totals.carbs}g · {copy.fatShort} {totals.fat}g · {copy.fiberShort} {totals.fiber}g
                   </div>
                 </div>
               </div>
@@ -119,8 +135,8 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                 <table className="w-full text-left">
                   <thead>
                     <tr className="border-b border-stone-100 bg-stone-50 text-xs uppercase tracking-wider text-stone-500 font-medium">
-                      <th className="p-5 font-semibold">Food</th>
-                      <th className="p-5 font-semibold">Qty</th>
+                      <th className="p-5 font-semibold">{copy.food}</th>
+                      <th className="p-5 font-semibold">{copy.qty}</th>
                       <th className="p-5 font-semibold text-right text-orange-600">Kcal</th>
                       <th className="p-5 font-semibold text-right text-red-600">Prot</th>
                       <th className="p-5 font-semibold text-right text-amber-600">Carb</th>
@@ -162,8 +178,9 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                         <td className="p-5 text-center">
                           <button
                             onClick={() => onRemove(item.id)}
-                            className="p-2 rounded-full text-stone-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
-                            title="Remove item"
+                            className="p-2 rounded-full text-stone-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-100"
+                            title={copy.removeItem}
+                            aria-label={copy.removeItem}
                           >
                             <Trash2 size={16} />
                           </button>
@@ -179,7 +196,7 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
       </div>
       {mealSections.length === 0 && (
         <div className="mt-3 text-sm text-stone-400 px-2">
-          No meals yet.
+          {copy.noMealsYet}
         </div>
       )}
     </div>

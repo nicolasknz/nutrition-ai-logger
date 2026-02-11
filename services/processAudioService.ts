@@ -55,6 +55,8 @@ export interface ApiDebugInfo {
 export interface ProcessAudioServiceConfig {
   /** When true, transcribe with browser Web Speech API only; do not send to /api/process-audio (no LLM). */
   testingMode?: boolean;
+  /** BCP-47 language code for recognition and server hint (e.g. en-US, pt-BR). */
+  language?: string;
   onFoodLogged: (food: Omit<FoodItem, 'id' | 'timestamp' | 'mealId'>) => void;
   onAudioData: (amplitude: number) => void;
   onTranscription: (text: string) => void;
@@ -124,11 +126,12 @@ export class ProcessAudioService {
           // IMPORTANT: In testing mode, avoid opening getUserMedia simultaneously.
           // On many mobile browsers, SpeechRecognition returns empty results if mic is already in use.
           this.startTestingPulse();
-          this.logTesting(`speech recognition available (${navigator.language || 'en-US'})`);
+          const recognitionLanguage = this.config.language || navigator.language || 'en-US';
+          this.logTesting(`speech recognition available (${recognitionLanguage})`);
           this.recognition = new SpeechRecognitionCtor();
           this.recognition.continuous = true;
           this.recognition.interimResults = true;
-          this.recognition.lang = navigator.language || 'en-US';
+          this.recognition.lang = recognitionLanguage;
           this.recognition.onresult = (e: SpeechRecognitionEvent) => {
             for (let i = e.resultIndex; i < e.results.length; i++) {
               const r = e.results[i];
@@ -298,7 +301,8 @@ export class ProcessAudioService {
   }
 
   private async sendToApi(audioBase64: string): Promise<void> {
-    const payloadBytes = new TextEncoder().encode(JSON.stringify({ audioBase64 })).length;
+    const requestBody = { audioBase64, preferredLanguage: this.config.language || 'en-US' };
+    const payloadBytes = new TextEncoder().encode(JSON.stringify(requestBody)).length;
     const report = (info: ApiDebugInfo) => {
       this.config.onDebug?.({ ...info, payloadBytes });
     };
@@ -306,7 +310,7 @@ export class ProcessAudioService {
       const res = await fetch('/api/process-audio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audioBase64 }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await res.json().catch(() => ({}));
