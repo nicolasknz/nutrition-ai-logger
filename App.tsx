@@ -400,7 +400,10 @@ const App: React.FC = () => {
 
   const todayMealIds = useMemo(() => new Set(todayItems.map((item) => item.mealId)), [todayItems]);
 
-  const todayMeals = useMemo(() => meals.filter((meal) => todayMealIds.has(meal.id)), [meals, todayMealIds]);
+  const todayMeals = useMemo(
+    () => meals.filter((meal) => todayMealIds.has(meal.id) || meal.isLoading),
+    [meals, todayMealIds]
+  );
 
   const historyItems = useMemo(
     () => items.filter((item) => isSameCalendarDay(item.timestamp, selectedHistoryDate)),
@@ -657,6 +660,8 @@ const App: React.FC = () => {
             const message = deleteError instanceof Error ? deleteError.message : 'Failed to delete empty meal';
             setError(message);
           });
+        } else if (activeMealId) {
+          setMeals((prev) => prev.map((m) => m.id === activeMealId ? { ...m, isLoading: false } : m));
         }
         activeRecordingMealIdRef.current = null;
         recordingFoodsCountRef.current = 0;
@@ -707,7 +712,10 @@ const App: React.FC = () => {
     isTransitioningRef.current = true;
     setIsRecording(false);
     setIsProcessing(true);
-    setTranscript('Processing...');
+    const activeMealId = activeRecordingMealIdRef.current;
+    if (activeMealId) {
+      setMeals((prev) => prev.map((m) => m.id === activeMealId ? { ...m, isLoading: true } : m));
+    }
     if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
       navigator.vibrate(10);
     }
@@ -885,6 +893,16 @@ const App: React.FC = () => {
                 {' · '}{t.foods}{': '}{lastDebug.foodsCount}
                 {lastDebug.payloadBytes != null && ` · payload: ${(lastDebug.payloadBytes / 1024).toFixed(1)} KB`}
                 {lastDebug.errorMsg && ` · ${lastDebug.errorMsg}`}
+                {(lastDebug.wavMs != null || lastDebug.fetchMs != null) && (
+                  <span className="block mt-0.5 text-slate-500">
+                    {lastDebug.serverTiming != null && `total: ${lastDebug.serverTiming.totalMs}ms`}
+                    {lastDebug.wavMs != null && ` | wav: ${lastDebug.wavMs}ms`}
+                    {lastDebug.fetchMs != null && ` | fetch: ${lastDebug.fetchMs}ms`}
+                    {lastDebug.parseMs != null && ` | json: ${lastDebug.parseMs}ms`}
+                    {lastDebug.serverTiming != null &&
+                      ` | gemini: ${lastDebug.serverTiming.geminiMs}ms body: ${lastDebug.serverTiming.bodyMs}ms`}
+                  </span>
+                )}
               </>
             ) : null}
           </div>
@@ -1002,7 +1020,7 @@ const App: React.FC = () => {
       </div>
 
       {/* Voice status overlay */}
-      {(isRecording || isStarting || isProcessing) && (
+      {(isRecording || isStarting) && (
         <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[2px] flex flex-col justify-end pb-32 items-center pointer-events-none">
            <div className="bg-white/90 backdrop-blur-md shadow-2xl rounded-3xl p-6 w-11/12 max-w-sm mb-4 border border-white/50 animate-in slide-in-from-bottom-10 fade-in zoom-in-95">
               <div className="flex flex-col items-center gap-4 text-center">

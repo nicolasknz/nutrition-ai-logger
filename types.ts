@@ -17,6 +17,7 @@ export interface MealGroup {
   label: string;
   createdAt: Date;
   transcriptSnippet?: string;
+  isLoading?: boolean;
 }
 
 export interface DailyStats {

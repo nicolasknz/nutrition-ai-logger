@@ -1,5 +1,16 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+export const config = { api: { bodyParser: false } };
+
+function getRawBody(req: VercelRequest): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 /**
  * Same tool + instruction + response handling as in services/geminiLiveService.ts
  * (previously: logFoodTool, systemInstruction in live.connect, handleMessage for toolCall/inputTranscription).
@@ -25,36 +36,6 @@ const LOG_FOOD_SCHEMA = {
   },
 };
 
-/** Build a minimal WAV header for PCM 16-bit mono at 16kHz */
-function pcmToWavBase64(pcmBase64: string): string {
-  const pcmBuffer = Buffer.from(pcmBase64, 'base64');
-  const numChannels = 1;
-  const sampleRate = 16000;
-  const bitsPerSample = 16;
-  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-  const dataSize = pcmBuffer.length;
-  const headerSize = 44;
-  const buffer = Buffer.alloc(headerSize + dataSize);
-  let offset = 0;
-
-  buffer.write('RIFF', offset); offset += 4;
-  buffer.writeUInt32LE(36 + dataSize, offset); offset += 4;
-  buffer.write('WAVE', offset); offset += 4;
-  buffer.write('fmt ', offset); offset += 4;
-  buffer.writeUInt32LE(16, offset); offset += 4; // chunk size
-  buffer.writeUInt16LE(1, offset); offset += 2;  // PCM
-  buffer.writeUInt16LE(numChannels, offset); offset += 2;
-  buffer.writeUInt32LE(sampleRate, offset); offset += 4;
-  buffer.writeUInt32LE(byteRate, offset); offset += 4;
-  buffer.writeUInt16LE(numChannels * (bitsPerSample / 8), offset); offset += 2;
-  buffer.writeUInt16LE(bitsPerSample, offset); offset += 2;
-  buffer.write('data', offset); offset += 4;
-  buffer.writeUInt32LE(dataSize, offset);
-  pcmBuffer.copy(buffer, headerSize);
-
-  return buffer.toString('base64');
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -66,17 +47,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: 'Server missing GEMINI_API_KEY' });
   }
 
-  const body = req.body as { audioBase64?: string; preferredLanguage?: string };
-  const audioBase64 = body?.audioBase64;
-  const preferredLanguage = body?.preferredLanguage === 'pt-BR' ? 'pt-BR' : 'en-US';
-  if (!audioBase64 || typeof audioBase64 !== 'string') {
-    return res.status(400).json({ error: 'Missing audioBase64 in body' });
+  const contentType = req.headers['content-type'] ?? '';
+  if (!contentType.includes('audio/wav')) {
+    console.warn('[process-audio] Content-Type is not audio/wav — got:', contentType,
+      '— bodyParser:false may not be active.');
   }
-  if (Buffer.from(audioBase64, 'base64').length < 1000) {
+
+  const preferredLanguage = req.query.lang === 'pt-BR' ? 'pt-BR' : 'en-US';
+
+  const t0 = Date.now();
+
+  const bodyStart = Date.now();
+  const wavBuffer = await getRawBody(req);
+  const bodyMs = Date.now() - bodyStart;
+  // WAV header = 44 bytes; reject if audio data portion is too small
+  if (wavBuffer.length < 1044) {
     return res.status(400).json({ error: 'Audio too short. Hold the mic a bit longer.' });
   }
 
-  const wavBase64 = pcmToWavBase64(audioBase64);
+  const wavBase64 = wavBuffer.toString('base64');
   // Must support generateContent; use GEMINI_MODEL to override (e.g. gemini-2.0-flash-lite for quota)
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -92,7 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         role: 'user',
         parts: [
           {
-            text: `Listen to this audio. The user is stating what they ate or drank. ${languageInstruction} For EACH separate food or drink mentioned, call the log_food tool once (e.g. "2 bananas and 3 eggs" = two calls: one for bananas, one for eggs). Use your best estimate for each item. Do not ask questions; just log everything mentioned. If nothing food-related is said, do not call the tool.`,
+            text: `Listen to this audio. The user is stating what they ate or drank. ${languageInstruction} For EACH separate food or drink mentioned, call the log_food tool once (e.g. "2 bananas and 3 eggs" = two calls: one for bananas, one for eggs). Use your best estimate for each item. Do not ask questions; just log everything mentioned. If nothing food-related is said, do not call the tool. Return ONLY tool calls. No explanations. If you include a transcription, max 15 words.`,
           },
           {
             inlineData: {
@@ -105,7 +94,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 512,
     },
     tools: [
       {
@@ -120,6 +109,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     let geminiRes: Response;
     let errText = '';
+    const geminiStart = Date.now();
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       geminiRes = await fetch(url, {
         method: 'POST',
@@ -132,6 +122,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!isRetryable || attempt === maxRetries) break;
       await new Promise((r) => setTimeout(r, retryDelayMs));
     }
+    const geminiMs = Date.now() - geminiStart;
 
     if (!geminiRes!.ok) {
       console.error('Gemini API error', geminiRes!.status, errText);
@@ -158,9 +149,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       functionCall?: { name: string; args: Record<string, unknown> };
       function_call?: { name: string; args: Record<string, unknown> };
     }
+    const parseStart = Date.now();
     const data = (await geminiRes.json()) as {
       candidates?: Array<{ content?: { parts?: Part[] } }>;
     };
+    const parseMs = Date.now() - parseStart;
 
     const parts = data.candidates?.[0]?.content?.parts ?? [];
     let transcription: string | undefined;
@@ -184,7 +177,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    return res.status(200).json({ transcription: transcription ?? null, foods });
+    const totalMs = Date.now() - t0;
+    return res.status(200).json({
+      transcription: transcription ?? null,
+      foods,
+      _timing: { bodyMs, geminiMs, parseMs, totalMs },
+    });
   } catch (err) {
     console.error('process-audio error', err);
     return res.status(500).json({

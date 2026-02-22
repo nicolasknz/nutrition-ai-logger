@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NutritionGoals } from '../types';
 
 interface GoalsProps {
@@ -26,6 +26,8 @@ const Goals: React.FC<GoalsProps> = ({ goals, onGoalsChange, language }) => {
       : 'Set only the goals you want to track.',
     clearAll: isPortuguese ? 'Limpar todas' : 'Clear all',
     clear: isPortuguese ? 'Limpar' : 'Clear',
+    save: isPortuguese ? 'Salvar metas' : 'Save goals',
+    saved: isPortuguese ? 'Metas salvas!' : 'Goals saved!',
     placeholder: isPortuguese ? 'Opcional' : 'Optional',
     fieldLabels: {
       calories: isPortuguese ? 'Calorias' : 'Calories',
@@ -36,31 +38,53 @@ const Goals: React.FC<GoalsProps> = ({ goals, onGoalsChange, language }) => {
     } as Record<GoalKey, string>,
   };
 
-  const handleGoalChange = (key: GoalKey, value: string) => {
-    onGoalsChange((prev) => {
-      const next = { ...prev };
-      const trimmed = value.trim();
-      if (!trimmed) {
-        delete next[key];
-        return next;
-      }
+  const [saved, setSaved] = useState(false);
 
-      const parsed = Number(trimmed.replace(',', '.'));
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        return prev;
-      }
+  const [draft, setDraft] = useState<Record<GoalKey, string>>(() => ({
+    calories: goals.calories != null ? String(goals.calories) : '',
+    protein: goals.protein != null ? String(goals.protein) : '',
+    carbs: goals.carbs != null ? String(goals.carbs) : '',
+    fat: goals.fat != null ? String(goals.fat) : '',
+    fiber: goals.fiber != null ? String(goals.fiber) : '',
+  }));
 
-      next[key] = Math.round(parsed * 10) / 10;
-      return next;
+  // Sync draft when goals are reset externally (e.g. clear all)
+  useEffect(() => {
+    setDraft({
+      calories: goals.calories != null ? String(goals.calories) : '',
+      protein: goals.protein != null ? String(goals.protein) : '',
+      carbs: goals.carbs != null ? String(goals.carbs) : '',
+      fat: goals.fat != null ? String(goals.fat) : '',
+      fiber: goals.fiber != null ? String(goals.fiber) : '',
     });
+  }, [goals]);
+
+  const handleDraftChange = (key: GoalKey, value: string) => {
+    setDraft((prev) => ({ ...prev, [key]: value }));
   };
 
-  const clearGoal = (key: GoalKey) => {
-    onGoalsChange((prev) => {
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
+  const clearDraft = (key: GoalKey) => {
+    setDraft((prev) => ({ ...prev, [key]: '' }));
+  };
+
+  const handleClearAll = () => {
+    setDraft({ calories: '', protein: '', carbs: '', fat: '', fiber: '' });
+    onGoalsChange({});
+  };
+
+  const handleSubmit = () => {
+    const next: NutritionGoals = {};
+    for (const { key } of goalFields) {
+      const trimmed = draft[key].trim().replace(',', '.');
+      if (!trimmed) continue;
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        next[key] = Math.round(parsed * 10) / 10;
+      }
+    }
+    onGoalsChange(next);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
   };
 
   return (
@@ -72,7 +96,7 @@ const Goals: React.FC<GoalsProps> = ({ goals, onGoalsChange, language }) => {
         </div>
         <button
           type="button"
-          onClick={() => onGoalsChange({})}
+          onClick={handleClearAll}
           className="rounded-lg border border-stone-200 px-3 py-2 text-xs font-semibold text-stone-600 hover:bg-stone-50"
         >
           {copy.clearAll}
@@ -92,15 +116,15 @@ const Goals: React.FC<GoalsProps> = ({ goals, onGoalsChange, language }) => {
                 inputMode="decimal"
                 min="0"
                 step="0.1"
-                value={goals[key] ?? ''}
-                onChange={(e) => handleGoalChange(key, e.target.value)}
+                value={draft[key]}
+                onChange={(e) => handleDraftChange(key, e.target.value)}
                 placeholder={copy.placeholder}
                 className="h-11 w-full rounded-lg border border-stone-200 bg-white px-3 text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
               <span className="w-12 shrink-0 text-xs font-medium text-stone-500">{unit}</span>
               <button
                 type="button"
-                onClick={() => clearGoal(key)}
+                onClick={() => clearDraft(key)}
                 className="rounded-lg border border-stone-200 px-2.5 py-2 text-xs font-semibold text-stone-600 hover:bg-stone-50"
               >
                 {copy.clear}
@@ -109,6 +133,14 @@ const Goals: React.FC<GoalsProps> = ({ goals, onGoalsChange, language }) => {
           </div>
         ))}
       </div>
+
+      <button
+        type="button"
+        onClick={handleSubmit}
+        className={`mt-6 w-full rounded-2xl px-4 py-3 text-sm font-semibold text-white transition-colors ${saved ? 'bg-emerald-600' : 'bg-stone-900 hover:bg-stone-700 active:bg-stone-800'}`}
+      >
+        {saved ? copy.saved : copy.save}
+      </button>
     </section>
   );
 };

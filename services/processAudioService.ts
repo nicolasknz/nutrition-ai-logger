@@ -1,4 +1,4 @@
-import { float32ToPCM16, arrayBufferToBase64 } from './audioUtils';
+import { float32ToPCM16, buildWavBlob } from './audioUtils';
 import type { FoodItem } from '../types';
 
 /** Browser SpeechRecognition (Chrome: webkitSpeechRecognition) for testing mode (no LLM). */
@@ -51,6 +51,11 @@ export interface ApiDebugInfo {
   foodsCount: number;
   errorMsg?: string;
   payloadBytes?: number;
+  // Timing fields (ms)
+  wavMs?: number;
+  fetchMs?: number;
+  parseMs?: number;
+  serverTiming?: { bodyMs: number; geminiMs: number; parseMs: number; totalMs: number };
 }
 export interface ProcessAudioServiceConfig {
   /** When true, transcribe with browser Web Speech API only; do not send to /api/process-audio (no LLM). */
@@ -86,6 +91,8 @@ export class ProcessAudioService {
   private _testingPulseInterval: ReturnType<typeof setInterval> | 0 = 0;
   /** In testing mode, only close after user explicitly requests stop. */
   private manualStopRequested = false;
+  private _maxDurationTimer: ReturnType<typeof setTimeout> | 0 = 0;
+  private static readonly MAX_RECORDING_MS = 7000;
 
   constructor(config: ProcessAudioServiceConfig) {
     this.config = config;
@@ -233,6 +240,10 @@ export class ProcessAudioService {
 
       source.connect(processor);
       processor.connect(ctx.destination);
+
+      this._maxDurationTimer = setTimeout(() => {
+        if (this.active) this.stopInput();
+      }, ProcessAudioService.MAX_RECORDING_MS);
     } catch (err) {
       this.config.onError(err instanceof Error ? err : new Error('Failed to start microphone'));
       this.active = false;
@@ -278,16 +289,15 @@ export class ProcessAudioService {
     }
     this.config.onAudioData(0);
 
-    const totalLength = this.pcmChunks.reduce((acc, arr) => acc + arr.length, 0);
-    const combined = new Int16Array(totalLength);
-    let offset = 0;
-    for (const chunk of this.pcmChunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
+    if (this._maxDurationTimer) {
+      clearTimeout(this._maxDurationTimer);
+      this._maxDurationTimer = 0;
     }
-    this.pcmChunks = [];
 
-    const audioBase64 = arrayBufferToBase64(combined.buffer);
+    const wavStart = Date.now();
+    const wavBlob = buildWavBlob(this.pcmChunks);
+    const wavMs = Date.now() - wavStart;
+    this.pcmChunks = [];
     this.active = false;
 
     if (this.audioContext) {
@@ -296,28 +306,33 @@ export class ProcessAudioService {
     }
 
     if (!this.config.testingMode) {
-      this.sendToApi(audioBase64);
+      this.sendToApi(wavBlob, wavMs);
     }
   }
 
-  private async sendToApi(audioBase64: string): Promise<void> {
-    const requestBody = { audioBase64, preferredLanguage: this.config.language || 'en-US' };
-    const payloadBytes = new TextEncoder().encode(JSON.stringify(requestBody)).length;
+  private async sendToApi(wavBlob: Blob, wavMs: number): Promise<void> {
+    const lang = encodeURIComponent(this.config.language || 'en-US');
     const report = (info: ApiDebugInfo) => {
-      this.config.onDebug?.({ ...info, payloadBytes });
+      this.config.onDebug?.({ ...info, payloadBytes: wavBlob.size, wavMs });
     };
     try {
-      const res = await fetch('/api/process-audio', {
+      const fetchStart = Date.now();
+      const res = await fetch(`/api/process-audio?lang=${lang}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'audio/wav' },
+        body: wavBlob,
       });
+      const fetchMs = Date.now() - fetchStart;
 
+      const parseStart = Date.now();
       const data = await res.json().catch(() => ({}));
+      const parseMs = Date.now() - parseStart;
+
+      const serverTiming = data._timing as ApiDebugInfo['serverTiming'] | undefined;
 
       if (!res.ok) {
         const msg = data?.error || data?.details || `Request failed (${res.status})`;
-        report({ status: res.status, ok: false, foodsCount: 0, errorMsg: msg });
+        report({ status: res.status, ok: false, foodsCount: 0, errorMsg: msg, fetchMs, parseMs, serverTiming });
         this.config.onError(new Error(msg));
         this.config.onClose();
         return;
@@ -328,7 +343,7 @@ export class ProcessAudioService {
       }
       const foods = data.foods ?? (data.food ? [data.food] : []);
       const count = Array.isArray(foods) ? foods.length : 0;
-      report({ status: res.status, ok: true, foodsCount: count });
+      report({ status: res.status, ok: true, foodsCount: count, fetchMs, parseMs, serverTiming });
       if (Array.isArray(foods)) {
         for (const f of foods) {
           if (f && typeof f === 'object') {
@@ -359,6 +374,10 @@ export class ProcessAudioService {
   stop(): void {
     this.active = false;
     this.manualStopRequested = true;
+    if (this._maxDurationTimer) {
+      clearTimeout(this._maxDurationTimer);
+      this._maxDurationTimer = 0;
+    }
     if (this._testingFallback) {
       clearTimeout(this._testingFallback);
       this._testingFallback = 0;

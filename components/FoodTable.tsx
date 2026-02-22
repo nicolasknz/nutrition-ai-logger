@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { motion, PanInfo } from 'framer-motion';
+import { motion, AnimatePresence, PanInfo } from 'framer-motion';
 import { FoodItem, MealGroup } from '../types';
-import { Trash2 } from 'lucide-react';
+import { Trash2, ChevronDown, ArrowRightLeft } from 'lucide-react';
 
 interface FoodTableProps {
   items: FoodItem[];
@@ -13,12 +13,21 @@ interface FoodTableProps {
 }
 
 const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveItem, onEditQuantity, language }) => {
-  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
-  const [dropMealId, setDropMealId] = useState<string | null>(null);
   const [editingItem, setEditingItem] = useState<FoodItem | null>(null);
-  const [quantityDraft, setQuantityDraft] = useState('');
+  const [quantityNum, setQuantityNum] = useState('');
+  const [quantityUnit, setQuantityUnit] = useState('');
   const [swipingItemId, setSwipingItemId] = useState<string | null>(null);
   const [wasDragging, setWasDragging] = useState(false);
+  const [collapsedMeals, setCollapsedMeals] = useState<Set<string>>(new Set());
+
+  const toggleCollapse = (mealId: string) => {
+    setCollapsedMeals((prev) => {
+      const next = new Set(prev);
+      if (next.has(mealId)) next.delete(mealId);
+      else next.add(mealId);
+      return next;
+    });
+  };
   const isPortuguese = language === 'pt-BR';
   const copy = {
     meal: isPortuguese ? 'Refeicao' : 'Meal',
@@ -43,24 +52,34 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
     quantityPlaceholder: isPortuguese ? 'Ex.: 2 fatias, 1 xicara...' : 'E.g. 2 slices, 1 cup...',
     cancel: isPortuguese ? 'Cancelar' : 'Cancel',
     save: isPortuguese ? 'Salvar' : 'Save',
-    tapToViewDetails: isPortuguese ? 'Toque em um item para ver detalhes.' : 'Tap an item to view details.',
+    moveTo: isPortuguese ? 'Mover para' : 'Move to',
+    tapToViewDetails: isPortuguese ? 'Toque para editar · Deslize para deletar' : 'Tap to edit · Swipe to delete',
     noMealsYet: isPortuguese ? 'Nenhuma refeicao ainda.' : 'No meals yet.',
   };
-  const isSaveDisabled = quantityDraft.trim().length === 0;
+  const isSaveDisabled = quantityNum.trim().length === 0 || Number(quantityNum.replace(',', '.')) <= 0;
 
   const openEditModal = (item: FoodItem) => {
     setEditingItem(item);
-    setQuantityDraft(item.quantity);
+    const match = item.quantity.match(/^([0-9.,]+)\s*(.*)$/);
+    if (match) {
+      setQuantityNum(match[1]);
+      setQuantityUnit(match[2].trim());
+    } else {
+      setQuantityNum(item.quantity);
+      setQuantityUnit('');
+    }
   };
 
   const closeEditModal = () => {
     setEditingItem(null);
-    setQuantityDraft('');
+    setQuantityNum('');
+    setQuantityUnit('');
   };
 
   const saveEditedQuantity = () => {
     if (!editingItem || isSaveDisabled) return;
-    onEditQuantity(editingItem.id, quantityDraft.trim());
+    const combined = quantityUnit ? `${quantityNum.trim()} ${quantityUnit}` : quantityNum.trim();
+    onEditQuantity(editingItem.id, combined);
     closeEditModal();
   };
 
@@ -87,7 +106,7 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
     );
     const sections = sortedMeals
-      .filter((meal) => byMeal.has(meal.id))
+      .filter((meal) => byMeal.has(meal.id) || meal.isLoading)
       .map((meal) => ({ meal, items: byMeal.get(meal.id) ?? [] }));
 
     for (const [mealId, mealItems] of byMeal.entries()) {
@@ -106,7 +125,7 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
     return sections;
   }, [copy.meal, items, meals]);
 
-  if (items.length === 0) {
+  if (items.length === 0 && !meals.some((m) => m.isLoading)) {
     return (
       <div className="mt-12 flex flex-col items-center justify-center py-20 text-stone-400 border-2 border-dashed border-stone-200 rounded-3xl bg-stone-50/50">
         <p className="text-lg font-medium text-stone-500">{copy.emptyPlate}</p>
@@ -139,46 +158,50 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
           });
           const mealLabel = `${copy.meal} ${mealIndex + 1} - ${mealTime}`;
 
+          const isCollapsed = collapsedMeals.has(meal.id);
+
           return (
             <div
               key={meal.id}
-              className={`overflow-hidden rounded-3xl border bg-white shadow-sm transition-colors ${
-                dropMealId === meal.id
-                  ? 'border-orange-300 ring-2 ring-orange-100'
-                  : 'border-stone-200'
-              }`}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDropMealId(meal.id);
-              }}
-              onDragLeave={() => {
-                if (dropMealId === meal.id) setDropMealId(null);
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const itemId = e.dataTransfer.getData('text/plain') || draggedItemId;
-                setDropMealId(null);
-                if (!itemId) return;
-                const dragged = items.find((item) => item.id === itemId);
-                if (!dragged || dragged.mealId === meal.id) return;
-                onMoveItem(itemId, meal.id);
-              }}
+              className="overflow-hidden rounded-3xl border border-stone-200 bg-white shadow-sm"
             >
-              <div className="border-b border-stone-100 bg-stone-50 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => toggleCollapse(meal.id)}
+                className="w-full text-left border-b border-stone-100 bg-stone-50 px-5 py-3 hover:bg-stone-100 transition-colors"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold text-stone-900">{mealLabel}</div>
-                    {meal.transcriptSnippet && (
-                      <div className="text-xs text-stone-500">
-                        {`"${meal.transcriptSnippet}"`}
-                      </div>
-                    )}
+                  <div className="flex items-center gap-2">
+                    <ChevronDown
+                      size={16}
+                      className={`text-stone-400 transition-transform duration-200 ${isCollapsed ? '-rotate-90' : ''}`}
+                    />
+                    <div>
+                      <div className="text-sm font-semibold text-stone-900">{mealLabel}</div>
+                      {meal.transcriptSnippet && (
+                        <div className="text-xs text-stone-500">
+                          {`"${meal.transcriptSnippet}"`}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-xs text-stone-600">
-                    {totals.calories} kcal · {copy.proteinShort} {totals.protein}g · {copy.carbsShort} {totals.carbs}g · {copy.fatShort} {totals.fat}g · {copy.fiberShort} {totals.fiber}g
-                  </div>
+                  {meal.isLoading && mealItems.length === 0 ? (
+                    <div className="text-xs text-stone-400 italic">
+                      {isPortuguese ? 'Aguardando resultado...' : 'Waiting for result...'}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-stone-600">
+                      {Math.round(totals.calories)} kcal · {copy.proteinShort} {+totals.protein.toFixed(1)}g · {copy.carbsShort} {+totals.carbs.toFixed(1)}g · {copy.fatShort} {+totals.fat.toFixed(1)}g · {copy.fiberShort} {+totals.fiber.toFixed(1)}g
+                    </div>
+                  )}
                 </div>
-              </div>
+              </button>
+              <motion.div
+                animate={isCollapsed ? { height: 0, opacity: 0 } : { height: 'auto', opacity: 1 }}
+                initial={false}
+                transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                className="overflow-hidden"
+              >
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
@@ -190,12 +213,27 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-100 text-sm">
-                    {mealItems.map((item) => {
+                    {meal.isLoading && mealItems.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="px-5 py-6 text-center">
+                          <div className="flex items-center justify-center gap-2 text-stone-400 text-sm">
+                            <div className="h-4 w-4 rounded-full border-2 border-stone-300 border-t-stone-600 animate-spin" />
+                            {isPortuguese ? 'Analisando...' : 'Analyzing...'}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    <AnimatePresence initial={true}>
+                    {mealItems.map((item, itemIndex) => {
                       const isSwipingThis = swipingItemId === item.id;
 
                       return (
                       <motion.tr
                         key={item.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0, x: 0 }}
+                        exit={{ x: -300, opacity: 0, transition: { duration: 0.3 } }}
+                        transition={{ duration: 0.22, delay: itemIndex * 0.06, ease: [0.25, 0.46, 0.45, 0.94] }}
                         drag="x"
                         dragConstraints={{ left: -200, right: 0 }}
                         dragElastic={0.1}
@@ -211,7 +249,6 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                           }
                         }}
                         onDragEnd={(event, info: PanInfo) => {
-                          const isDragging = wasDragging;
                           setSwipingItemId(null);
 
                           // If swiped more than 120px to the left, delete the item
@@ -221,15 +258,6 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
 
                           // Reset dragging flag after a short delay
                           setTimeout(() => setWasDragging(false), 100);
-                        }}
-                        animate={{
-                          x: 0,
-                          opacity: 1,
-                        }}
-                        exit={{
-                          x: -300,
-                          opacity: 0,
-                          transition: { duration: 0.3 }
                         }}
                         onClick={() => {
                           // Don't open modal if user was dragging
@@ -254,14 +282,16 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
                           )}
                         </td>
                         <td className="p-4 text-right text-stone-500 font-medium">{item.quantity}</td>
-                        <td className="p-4 text-right font-bold text-stone-800">{item.calories}</td>
-                        <td className="p-4 text-right text-stone-600 font-semibold">{item.protein}g</td>
+                        <td className="p-4 text-right font-bold text-stone-800">{Math.round(item.calories)}</td>
+                        <td className="p-4 text-right text-stone-600 font-semibold">{+item.protein.toFixed(1)}g</td>
                       </motion.tr>
                       );
                     })}
+                    </AnimatePresence>
                   </tbody>
                 </table>
               </div>
+              </motion.div>
             </div>
           );
         })}
@@ -287,14 +317,51 @@ const FoodTable: React.FC<FoodTableProps> = ({ items, meals, onRemove, onMoveIte
             {/* Quantity Editor */}
             <div className="mt-5">
               <label className="block text-sm font-medium text-stone-700 mb-2">{copy.qty}</label>
-              <input
-                type="text"
-                value={quantityDraft}
-                onChange={(e) => setQuantityDraft(e.target.value)}
-                className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-300"
-                placeholder={copy.quantityPlaceholder}
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="any"
+                  value={quantityNum}
+                  onChange={(e) => setQuantityNum(e.target.value)}
+                  className="w-24 rounded-xl border border-stone-300 px-3 py-2.5 text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-300"
+                />
+                {quantityUnit && (
+                  <span className="text-sm text-stone-600 font-medium">{quantityUnit}</span>
+                )}
+              </div>
             </div>
+
+            {/* Move to Meal */}
+            {mealSections.length > 1 && (
+              <div className="mt-5 pt-5 border-t border-stone-100">
+                <p className="text-sm font-medium text-stone-700 mb-2 flex items-center gap-1.5">
+                  <ArrowRightLeft size={14} className="text-stone-400" />
+                  {copy.moveTo}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {mealSections
+                    .filter(({ meal }) => meal.id !== editingItem.mealId)
+                    .map(({ meal }) => {
+                      const globalIdx = mealSections.findIndex((s) => s.meal.id === meal.id);
+                      return (
+                        <button
+                          key={meal.id}
+                          type="button"
+                          onClick={() => {
+                            onMoveItem(editingItem.id, meal.id);
+                            closeEditModal();
+                          }}
+                          className="rounded-xl border border-stone-200 px-3 py-2 text-xs font-semibold text-stone-700 hover:bg-stone-100 transition-colors"
+                        >
+                          {`${copy.meal} ${globalIdx + 1} · ${meal.createdAt.toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' })}`}
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
 
             {/* Macros Grid */}
             <div className="mt-6 grid grid-cols-2 gap-3">
